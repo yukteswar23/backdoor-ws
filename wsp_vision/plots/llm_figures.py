@@ -1,0 +1,197 @@
+"""Figures for the LLM experiments: detection in detail, removal in detail, and one episode step by step.
+
+    python -m wsp_vision.plots.llm_figures [detect_llm remove_llm case_study]
+"""
+from __future__ import annotations
+
+import argparse
+
+import matplotlib.pyplot as plt
+import numpy as np
+import torch
+import torch.nn.functional as F
+
+from ..common import CLASSES, FIG_DIR, RESULTS_DIR, ZOO_DIR, Trigger, load_cifar, read_json, to_input
+from .figures import AGENT_DETECT, _strip, load_detect, load_remove
+from .style import BACKDOORED, CLEAN, METHOD_COLORS, METHOD_LABELS, PALETTE, apply_style, bootstrap_ci, save
+
+PATTERNS = ["white_square", "checkerboard", "color_noise"]
+PATTERN_MARKERS = {"white_square": "o", "checkerboard": "s", "color_noise": "^"}
+
+
+def _agent_dir():
+    return RESULTS_DIR / "llm_remove" / read_json(RESULTS_DIR / "agent_remove.json")["meta"]["llm"] / "budget50"
+
+
+# ============================================================================ detection
+def fig_detect_llm():
+    rows = load_detect()
+    if not all(m in r for r in rows for m in AGENT_DETECT):
+        print("detect_llm: agent results incomplete, skipped"); return
+    key = read_json(ZOO_DIR / "eval" / "_key.json")
+    fig, (a, b) = plt.subplots(1, 2, figsize=(7.0, 2.7), gridspec_kw={"width_ratios": [1, 1.25]})
+    rng = np.random.default_rng(0)
+    for i, m in enumerate(AGENT_DETECT):
+        for j, (bd, col) in enumerate([(False, CLEAN), (True, BACKDOORED)]):
+            _strip(a, i + (j - 0.5) * 0.36, [r[m]["p_backdoor"] for r in rows if r["backdoored"] == bd],
+                   col, rng, width=0.1)
+    a.axhline(0.5, ls=":", color=PALETTE["grey_dark"], lw=0.8)
+    a.set_xticks(range(3)); a.set_xticklabels(["text", "image", "text+image"])
+    a.set_ylim(-0.03, 1.03); a.set_ylabel("Stated P(backdoored)")
+    a.scatter([], [], color=CLEAN, s=10, label="clean model")
+    a.scatter([], [], color=BACKDOORED, s=10, label="backdoored model")
+    a.legend(loc="lower left", fontsize=6.5, handletextpad=0.1, ncol=2, borderaxespad=0.1)
+    a.set_title("a  Stated probabilities", loc="left", fontweight="bold")
+
+    bd = [r for r in rows if r["backdoored"]]
+    fields = [("target", 10), ("pattern", 100 / 3), ("corner", 25)]
+    w = 0.26
+    for i, m in enumerate(AGENT_DETECT):
+        for k, (field, _) in enumerate(fields):
+            hits = [int(r[m].get(field) == key[r["model_id"]]["trigger"][field]) for r in bd]
+            v, lo, hi = bootstrap_ci(hits)
+            x = k + (i - 1) * w
+            b.bar(x, 100 * v, width=w * 0.92, color=METHOD_COLORS[m], edgecolor="black", lw=0.6,
+                  label=METHOD_LABELS[m] if k == 0 else None)
+            b.errorbar(x, 100 * v, yerr=[[100 * (v - lo)], [100 * (hi - v)]], color="black", capsize=2, lw=0.9)
+    for k, (_, chance) in enumerate(fields):
+        b.hlines(chance, k - 1.6 * w, k + 1.6 * w, color=PALETTE["grey_dark"], ls=":", lw=1)
+    b.set_xticks(range(3))
+    b.set_xticklabels(["target class\n(chance 10%)", "trigger pattern\n(chance 33%)", "trigger corner\n(chance 25%)"])
+    b.set_ylim(0, 100); b.set_ylabel("Correct on 20 backdoored (%)")
+    b.legend(fontsize=6.5, loc="upper right", handlelength=1)
+    b.set_title("b  What the LLM says the trigger is", loc="left", fontweight="bold")
+    save(fig, FIG_DIR / "detect_llm", """
+The LLM detectors in detail (eval zoo, 40 models). (a) Backdoor probability stated by the LLM for each
+clean (blue) and backdoored (red) model, by input mode; black markers are means with 95% bootstrap CIs.
+Unanswered calls count as 0.5. (b) Fraction of the 20 backdoored models for which the LLM names the true
+target class, trigger pattern and trigger corner; error bars are 95% bootstrap CIs; dotted lines are
+chance. Text mode: Nemotron 3 Ultra; image modes: Nemotron 3.5 Super VL.""")
+
+
+# ============================================================================ removal
+def fig_remove_llm():
+    rows = load_remove()
+    if not all("agent" in r for r in rows):
+        print("remove_llm: agent results incomplete, skipped"); return
+    changed = {r["model_id"]: read_json(_agent_dir() / r["model_id"] / "result.json")["weights_changed"] for r in rows}
+    fig, (a, b, c) = plt.subplots(1, 3, figsize=(7.2, 2.6), gridspec_kw={"width_ratios": [1.35, 1, 1]})
+    blue = METHOD_COLORS["agent"]
+    for i, r in enumerate(sorted(rows, key=lambda r: r["agent"]["asr"])):
+        a.plot([100 * r["original"]["asr"], 100 * r["agent"]["asr"]], [i, i], color=PALETTE["neutral"], lw=1.2, zorder=1)
+        a.scatter(100 * r["original"]["asr"], i, s=10, color=PALETTE["grey_dark"], zorder=2)
+        a.scatter(100 * r["agent"]["asr"], i, s=16, color=blue, zorder=3, marker=PATTERN_MARKERS[r["trigger"]["pattern"]])
+    a.axvline(20, ls=":", color=PALETTE["grey_dark"], lw=0.8)
+    a.set_yticks([]); a.set_ylabel("Backdoored models (sorted)")
+    a.set_xlim(-3, 103); a.set_xlabel("Attack success rate (%)")
+    a.scatter([], [], s=10, color=PALETTE["grey_dark"], label="before")
+    for p in PATTERNS:
+        a.scatter([], [], s=16, color=blue, marker=PATTERN_MARKERS[p], label="after, " + p.replace("_", " "))
+    a.legend(fontsize=6, loc="upper left", handletextpad=0.1, borderaxespad=0.1, bbox_to_anchor=(0.0, 1.0))
+    a.set_title("a  Before → after the agent", loc="left", fontweight="bold")
+
+    for r in rows:
+        b.scatter(100 * r["nc_unlearn"]["asr"], 100 * r["agent"]["asr"], s=16, color=blue,
+                  marker=PATTERN_MARKERS[r["trigger"]["pattern"]], alpha=0.85)
+    b.plot([0, 100], [0, 100], ls=":", color=PALETTE["grey_dark"], lw=0.8)
+    b.set_xlim(-3, 103); b.set_ylim(-3, 103); b.set_aspect("equal")
+    b.set_xlabel("NC unlearn ASR (%)"); b.set_ylabel("LLM agent ASR (%)")
+    n_better = sum(r["agent"]["asr"] < r["nc_unlearn"]["asr"] for r in rows)
+    b.text(98, 3, f"agent lower\non {n_better}/{len(rows)}", ha="right", va="bottom", fontsize=6.5)
+    b.set_title("b  vs. best baseline", loc="left", fontweight="bold")
+
+    for r in rows:
+        c.scatter(changed[r["model_id"]], 100 * r["agent"]["asr"], s=16, color=blue,
+                  marker=PATTERN_MARKERS[r["trigger"]["pattern"]], alpha=0.85)
+    c.set_xscale("log"); c.set_xticks([1, 3, 10, 30]); c.set_xticklabels(["1", "3", "10", "30"]); c.minorticks_off()
+    c.set_ylim(-3, 103); c.set_xlabel("Weights changed"); c.set_ylabel("ASR after (%)")
+    c.set_title("c  Size of the edit", loc="left", fontweight="bold")
+    save(fig, FIG_DIR / "remove_llm", f"""
+The LLM removal agent in detail ({len(rows)} backdoored eval models, Nemotron 3 Ultra, 50 forward passes).
+(a) Attack success rate on held-out images before (grey) and after (blue) the agent's edit, one row per
+model, sorted; marker shape is the trigger pattern; dotted line marks 20%. (b) Per model, the agent's ASR
+against that of NC unlearn, the best baseline on average; points below the diagonal favour the agent.
+(c) Number of weights the agent changed (of 24,234; log scale) against the resulting ASR.""")
+
+
+# ============================================================================ one episode
+def _features(state, x_uint8):
+    """GAP features of SmallCNN written out, so one channel can be read (same maths as the sandbox)."""
+    h = to_input(x_uint8)
+    for name in ["conv1", "conv2", "conv3"]:
+        h = F.max_pool2d(F.relu(F.conv2d(h, state[f"{name}.weight"], state[f"{name}.bias"], padding=1)), 2)
+    return h.mean(dim=(2, 3))
+
+
+def fig_case_study(mid: str = "m_27c068c4", channel: int = 62):
+    run = _agent_dir() / mid
+    res, tr = read_json(run / "result.json"), read_json(run / "transcript.json")["transcript"]
+    info = read_json(ZOO_DIR / "eval" / "_key.json")[mid]
+    trig, t = Trigger(**info["trigger"]), info["trigger"]["target"]
+    state = torch.load(ZOO_DIR / "eval" / f"{mid}.pt", weights_only=True)
+    _, _, x_te, _ = load_cifar("cpu")
+    with torch.no_grad():
+        f_clean = _features(state, x_te[:1000])[:, channel].numpy()
+        f_trig = _features(state, trig.apply(x_te[:1000]))[:, channel].numpy()
+
+    fig, (a, b, c, d) = plt.subplots(1, 4, figsize=(7.4, 2.45), gridspec_kw={"width_ratios": [1.05, 0.85, 1.5, 0.75]})
+    w = state["fc.weight"][:, channel].numpy()
+    a.bar(range(10), w, color=[BACKDOORED if k == t else PALETTE["neutral"] for k in range(10)], edgecolor="black", lw=0.5)
+    a.axhline(0, color="black", lw=0.6)
+    a.set_xticks(range(10)); a.set_xticklabels([n[:4] for n in CLASSES], rotation=90, fontsize=6.3)
+    a.set_ylabel(f"fc weight from channel {channel}")
+    a.set_title(f"a  Read: ch. {channel}", loc="left", fontweight="bold")
+
+    rng = np.random.default_rng(0)
+    for k, (vals, col) in enumerate([(f_clean, CLEAN), (f_trig, BACKDOORED)]):
+        b.scatter(k + rng.uniform(-0.22, 0.22, len(vals)), vals, s=2, color=col, alpha=0.35, edgecolor="none")
+        b.hlines(np.median(vals), k - 0.3, k + 0.3, color="black", lw=1.2)
+    b.set_xticks([0, 1]); b.set_xticklabels(["clean", "+trigger"]); b.set_xlim(-0.6, 1.6)
+    b.set_ylabel(f"Channel {channel} activation")
+    b.set_title("b  Probe", loc="left", fontweight="bold")
+
+    passes, last = [], 0
+    for e in tr:
+        last = max([o.get("passes_used") or 0 for o in e.get("tool_outputs") or []] + [last])
+        passes.append(last)
+    phases = [(0, 4, "read"), (5, 8, "probe"), (9, 18, "test edit"), (19, 20, "sweep"), (21, len(passes) - 1, "submit")]
+    for k, (s0, s1, lab) in enumerate(phases):
+        c.axvspan(s0 - 0.5, s1 + 0.5, color=["#EDEDED", "#FFFFFF"][k % 2], zorder=0)
+        c.text((s0 + s1) / 2, 54 + 7 * (k % 2), lab, ha="center", va="bottom", fontsize=5.8)
+    c.step(np.arange(len(passes)), passes, where="mid", color=METHOD_COLORS["agent"], lw=1.4)
+    c.set_xlim(-0.5, len(passes) - 0.5); c.set_ylim(0, 70); c.set_yticks([0, 25, 50])
+    c.set_xlabel("Agent turn"); c.set_ylabel("Forward passes used")
+    c.set_title("c  The episode", loc="left", fontweight="bold")
+
+    o, e_ = res["original"], res["edited"]
+    xs = np.arange(2)
+    for dx, vals, col, lab in [(-0.18, o, PALETTE["neutral"], "before"), (0.18, e_, METHOD_COLORS["agent"], "after")]:
+        v = [100 * vals["asr"], 100 * vals["clean_acc"]]
+        d.bar(xs + dx, v, width=0.34, color=col, edgecolor="black", lw=0.5, label=lab)
+        for x, y in zip(xs + dx, v):
+            d.text(x, y + 2, f"{y:.0f}", ha="center", va="bottom", fontsize=6)
+    d.set_xticks(xs); d.set_xticklabels(["ASR", "clean\nacc."]); d.set_ylim(0, 118); d.set_ylabel("%")
+    d.legend(fontsize=6, loc="upper right", handlelength=1, borderaxespad=0.0)
+    d.set_title("d  Result", loc="left", fontweight="bold")
+    save(fig, FIG_DIR / "case_study", f"""
+One removal episode, model {mid} (white 3x3 patch, bottom-left, target {CLASSES[t]}). (a) Classifier weights
+leaving conv3 channel {channel}: large and positive into '{CLASSES[t]}' (red), negative into most other
+classes. (b) The channel's activation on the 1,000 defender images, clean and with the real trigger
+(medians as black bars): silent on clean images, strongly on with the trigger. The agent found this with its
+own candidate patches; it never saw the real trigger. (c) Forward passes used by turn; phases summarise
+the transcript: read weights, probe with candidate patches, test the edit (zeroing the channel's fc weights)
+while checking clean accuracy, sweep 36 candidate triggers, submit. (d) Held-out attack success rate and clean accuracy before and after the edit,
+which set the {res['weights_changed']} fc weights of channel {channel} to zero.""")
+
+
+FIGS = {"detect_llm": fig_detect_llm, "remove_llm": fig_remove_llm, "case_study": fig_case_study}
+
+if __name__ == "__main__":
+    ap = argparse.ArgumentParser()
+    ap.add_argument("which", nargs="*", help="any of: " + ", ".join(FIGS) + " (default: all)")
+    apply_style()
+    which = ap.parse_args().which or list(FIGS)
+    if bad := set(which) - set(FIGS):
+        ap.error(f"unknown figure(s): {sorted(bad)}")
+    for w in which:
+        FIGS[w]()

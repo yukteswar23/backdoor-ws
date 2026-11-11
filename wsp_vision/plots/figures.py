@@ -284,7 +284,7 @@ def fig_remove_by_trigger():
     axes[0].set_ylabel("Attack success after defence (%)")
     axes[1].legend(fontsize=7, loc="center left", bbox_to_anchor=(1.02, 0.5), handletextpad=0.2)
     save(fig, FIG_DIR / "remove_by_trigger", """
-Attack success rate after each removal baseline, split by (a) trigger pattern and (b) trigger size;
+Attack success rate after each removal method (baselines and the LLM agent), split by (a) trigger pattern and (b) trigger size;
 n is the number of backdoored eval models in each group. Dots are models; black bars are group means.
 Groups are small, so these are descriptive, not significance tests.""")
 

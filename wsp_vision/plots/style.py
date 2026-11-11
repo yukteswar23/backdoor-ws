@@ -63,10 +63,12 @@ def apply_style(font_size: int = 9):
     })
 
 
-def save(fig, out_stem: Path, caption: str):
-    """Writes <stem>.pdf (vector), <stem>.png (300 dpi) and <stem>.txt (caption)."""
+def save(fig, out_stem: Path, caption: str, tight: bool = True):
+    """Writes <stem>.pdf (vector), <stem>.png (300 dpi) and <stem>.txt (caption).
+    tight=False for diagrams laid out by hand, which tight_layout would distort."""
     out_stem.parent.mkdir(parents=True, exist_ok=True)
-    fig.tight_layout(pad=1)
+    if tight:
+        fig.tight_layout(pad=1)
     for ext in ("pdf", "png"):
         fig.savefig(out_stem.with_suffix(f".{ext}"), dpi=300, bbox_inches="tight", pad_inches=0.03)
     out_stem.with_suffix(".txt").write_text(caption.strip() + "\n", encoding="utf-8")
