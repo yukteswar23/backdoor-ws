@@ -1,4 +1,5 @@
-"""Thin wrapper over the Anthropic SDK: one place for the model id, effort, cost accounting.
+"""One place for the model id, effort and cost accounting. Claude ids go to the Anthropic SDK;
+NVIDIA API catalog ids ("<org>/<model>") go to nvidia.py, which returns the same message shape.
 
 No refusal fallbacks are configured on purpose: a fallback would silently swap the model in the
 middle of a comparison. Refusals are recorded as such and reported.
@@ -10,12 +11,11 @@ import os
 
 import anthropic
 
-MODEL = os.environ.get("WSP_LLM", "claude-opus-5-5")  # e.g. gemini-3.8-flash, nvidia/nemotron-3-ultra-550b-a55b
-IS_GEMINI = MODEL.startswith("gemini")
+MODEL = os.environ.get("WSP_LLM", "claude-opus-5-5")  # e.g. nvidia/nemotron-3-ultra-550b-a55b
 IS_NVIDIA = "/" in MODEL  # NVIDIA API catalog ids are "<org>/<model>"
 EFFORT = "default" if IS_NVIDIA else "high"
 PRICE_PER_MTOK = ({"input": 0.0, "output": 0.0, "cache_write": 0.0, "cache_read": 0.0}
-                  if IS_GEMINI or IS_NVIDIA  # free tiers
+                  if IS_NVIDIA  # free tier
                   else {"input": 4.00, "output": 20.00, "cache_write": 5.00, "cache_read": 0.20})
 
 _client = None
@@ -24,6 +24,14 @@ _client = None
 class ServiceUnavailable(RuntimeError):
     """The API stayed unavailable through all retries. Callers leave the model unfinished, so a
     later run retries it; any other API error is permanent and is recorded as that model's outcome."""
+
+
+class AuthError(RuntimeError):
+    """The API rejected the key (401/403). Nothing can succeed, so the whole run stops and records
+    nothing; scripts exit with AUTH_EXIT so the retry loop does not try again."""
+
+
+AUTH_EXIT = 3
 
 
 def client() -> anthropic.Anthropic:
@@ -49,9 +57,6 @@ def usage_dict(u) -> dict:
 
 def stream(**kwargs):
     """Streams (long inputs, large max_tokens) and returns the final Message."""
-    if IS_GEMINI:
-        from . import gemini
-        return gemini.stream(MODEL, EFFORT, **kwargs)
     if IS_NVIDIA:
         from . import nvidia
         return nvidia.stream(MODEL, EFFORT, **kwargs)
@@ -60,8 +65,11 @@ def stream(**kwargs):
     kwargs.setdefault("output_config", {})
     kwargs["output_config"].setdefault("effort", EFFORT)
     kwargs.setdefault("thinking", {"type": "adaptive", "display": "summarized"})
-    with client().messages.stream(**kwargs) as s:
-        return s.get_final_message()
+    try:
+        with client().messages.stream(**kwargs) as s:
+            return s.get_final_message()
+    except (anthropic.AuthenticationError, anthropic.PermissionDeniedError) as e:
+        raise AuthError(str(e)[:300]) from e
 
 
 def thinking_and_text(msg) -> tuple[str, str]:

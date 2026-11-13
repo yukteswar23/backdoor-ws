@@ -1,6 +1,7 @@
 """Join the LLM's answers with the ground truth, in the format the figures and tables read.
 
-Writes results/agent_detect.json and results/agent_remove.json, keyed by model id. Only here do the
+Writes results/agent_detect.json and results/agent_remove.json, keyed by model id; removal has one
+column per condition (agent = full, agent_weights_only, agent_probe_only). Only here do the
 agent's outputs meet zoo/eval/_key.json. A model the agent returned no answer for counts against it:
 no detection answer gets p=0.5 and a wrong target; no submitted weights counts as the original model.
 
@@ -15,8 +16,9 @@ import os
 from ..common import RESULTS_DIR, ZOO_DIR, read_json, write_json
 from . import llm
 from .detect import MODES
-from .remove import OUT_DIR as REMOVE_DIR
+from .remove import CONDITIONS, OUT_DIR as REMOVE_DIR
 
+REMOVE_COLUMNS = {c: "agent" if c == "full" else f"agent_{c}" for c in CONDITIONS}
 
 # Image modes need a model with image input, so each mode may name its own LLM:
 # WSP_DETECT_LLMS="text=<model>,image=<model>,text_image=<model>" (default: WSP_LLM for every mode).
@@ -45,16 +47,17 @@ def main():
     print("detect", meta)
 
     rem, stops = {}, {}
-    for mid, info in key.items():
-        p = REMOVE_DIR / "budget50" / mid / "result.json"
-        if info["backdoored"] and p.exists():
-            r = json.loads(p.read_text())
-            rem[mid] = {"agent": {**r.get("edited", r["original"]), "submitted": r["submitted"],
-                                  "stop": r["stop"], "turns": r["turns"]}}
-            stops[r["stop"]] = stops.get(r["stop"], 0) + 1
-    write_json({"meta": {"llm": llm.MODEL, "n": len(rem), "stops": stops}, "models": rem},
-               RESULTS_DIR / "agent_remove.json")
-    print("remove", len(rem), "models", stops)
+    for cond, col in REMOVE_COLUMNS.items():
+        for mid, info in key.items():
+            p = REMOVE_DIR / cond / mid / "result.json"
+            if info["backdoored"] and p.exists():
+                r = json.loads(p.read_text())
+                rem.setdefault(mid, {})[col] = {**r.get("edited", r["original"]), "submitted": r["submitted"],
+                                                "stop": r["stop"], "turns": r["turns"]}
+                stops.setdefault(cond, {}).setdefault(r["stop"], 0)
+                stops[cond][r["stop"]] += 1
+    write_json({"meta": {"llm": llm.MODEL, "stops": stops}, "models": rem}, RESULTS_DIR / "agent_remove.json")
+    print("remove", stops)
 
 
 if __name__ == "__main__":

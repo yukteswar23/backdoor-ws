@@ -45,6 +45,19 @@ In short: the LLMs barely beat chance at detection, but the removal agent was co
 removed the most backdoors outright, typically by editing about six weights, although it often
 left the backdoor intact.
 
+**Ablations: does the agent read the weights or probe the network?** Same 20 models, same LLM.
+
+| Removal condition | Reads weights | Runs network | Mean ASR | ASR < 20% | Clean accuracy |
+|---|---|---|---|---|---|
+| Random edit (agent's edit at random positions, no LLM) | – | – | 89.5% | 0/20 | 65.0% |
+| Agent, weights only | yes | no | 77.7% | 2/20 | 69.5% |
+| Agent, probing only (weights hidden, edits by position) | no | 50 passes | 61.7% | 5/20 | 68.8% |
+| Agent, full | yes | 50 passes | 51.9% | 6/20 | 69.5% |
+
+Most of the agent's success comes from probing, but reading contributes: without running the network
+once, the weights-only agent reproduced the full agent's exact edit on the case-study model, an edit
+the probing-only agent missed. The agent's edits only work where it puts them (random edit: 89.5%).
+
 ## Reproduce
 
 ```bash
@@ -53,11 +66,10 @@ python -m wsp_vision.prepare_data   # downloads CIFAR-10 and builds data/cifar10
 bash run_zoo.sh                     # trains the zoo (already included in zoo/)
 bash run_baselines.sh               # non-LLM baselines + figures
 NVIDIA_API_KEY=... bash run_nvidia.sh   # LLM detection + removal, audit, scoring, figures
+NVIDIA_API_KEY=... bash run_ablation.sh # removal ablations (weights only, probing only, random edit)
 ```
 
-`run_gemini.sh` runs the same experiments on Gemini; its free tier (20 requests per day) was too small
-to finish. Set `WSP_LLM` to choose the model; ids with a `/` go to the NVIDIA API, `gemini-*` to
-Gemini, anything else to Claude. All LLM stages skip models already finished, so a stopped run resumes.
+Set `WSP_LLM` to choose the model; ids with a `/` go to the NVIDIA API, anything else to Claude. All LLM stages skip models already finished, so a stopped run resumes.
 
 ## Layout
 

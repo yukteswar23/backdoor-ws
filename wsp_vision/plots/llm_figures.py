@@ -20,7 +20,7 @@ PATTERN_MARKERS = {"white_square": "o", "checkerboard": "s", "color_noise": "^"}
 
 
 def _agent_dir():
-    return RESULTS_DIR / "llm_remove" / read_json(RESULTS_DIR / "agent_remove.json")["meta"]["llm"] / "budget50"
+    return RESULTS_DIR / "llm_remove" / read_json(RESULTS_DIR / "agent_remove.json")["meta"]["llm"] / "full"
 
 
 # ============================================================================ detection
@@ -184,7 +184,68 @@ while checking clean accuracy, sweep 36 candidate triggers, submit. (d) Held-out
 which set the {res['weights_changed']} fc weights of channel {channel} to zero.""")
 
 
-FIGS = {"detect_llm": fig_detect_llm, "remove_llm": fig_remove_llm, "case_study": fig_case_study}
+# ============================================================================ ablations
+ABLATION = ["original", "random_edit", "agent_weights_only", "agent_probe_only", "agent"]
+ABLATION_LABELS = {"original": "No defence", "random_edit": "Random\nedit", "agent_weights_only": "Weights\nonly",
+                   "agent_probe_only": "Probe\nonly", "agent": "Full\nagent"}
+
+
+def fig_ablation():
+    rows = [r for r in load_remove() if all(m in r for m in ABLATION)]
+    if not rows:
+        print("ablation: no model has every condition yet, skipped"); return
+    fig, (a, b, c) = plt.subplots(1, 3, figsize=(7.2, 2.7), gridspec_kw={"width_ratios": [1, 1, 1.3]})
+    rng = np.random.default_rng(0)
+    for ax, field, ylabel in [(a, "asr", "Attack success rate (%)"), (b, "clean_acc", "Clean accuracy (%)")]:
+        for i, m in enumerate(ABLATION):
+            vals = np.array([100 * r[m][field] for r in rows])
+            broken = np.array([r[m]["clean_acc"] < 0.2 for r in rows])
+            x = i + rng.uniform(-0.16, 0.16, len(vals))
+            ax.scatter(x[~broken], vals[~broken], s=10, color=METHOD_COLORS[m], alpha=0.6, edgecolor="none", zorder=2)
+            ax.scatter(x[broken], vals[broken], s=14, facecolor="none", edgecolor="black", lw=0.8, zorder=2)
+            mean, lo, hi = bootstrap_ci(vals)
+            ax.errorbar(i, mean, yerr=[[mean - lo], [hi - mean]], fmt="o", color="black", ms=4, capsize=3, lw=1, zorder=3)
+        ax.set_xticks(range(len(ABLATION)))
+        ax.set_xticklabels([ABLATION_LABELS[m].replace(chr(10), " ") for m in ABLATION], rotation=30, ha="right",
+                           rotation_mode="anchor", fontsize=6.5)
+        ax.set_ylabel(ylabel)
+    a.set_ylim(-3, 103); a.axhline(20, ls=":", color=PALETTE["grey_dark"], lw=0.8)
+    a.set_title("a  Backdoor left", loc="left", fontweight="bold")
+    b.set_title("b  Clean accuracy kept", loc="left", fontweight="bold")
+
+    order = sorted(rows, key=lambda r: r["agent"]["asr"])
+    grid = np.array([[100 * r[m]["asr"] for r in order] for m in ABLATION[1:]])
+    im = c.pcolormesh(np.arange(grid.shape[1] + 1) - 0.5, np.arange(grid.shape[0] + 1) - 0.5, grid, cmap="Reds",
+                      vmin=0, vmax=100, edgecolors="#BBBBBB", linewidth=0.4)
+    c.invert_yaxis()
+    for i, m in enumerate(ABLATION[1:]):
+        for j, r in enumerate(order):
+            if r[m]["clean_acc"] < 0.2:
+                c.text(j, i, "×", ha="center", va="center", fontsize=6, color="black")
+    n20 = {m: sum(r[m]["asr"] < 0.2 and r[m]["clean_acc"] >= 0.2 for r in rows) for m in ABLATION[1:]}
+    c.set_yticks(range(len(ABLATION) - 1))
+    c.set_yticklabels([f"{ABLATION_LABELS[m].replace(chr(10), ' ')}\n{n20[m]}/{len(rows)} < 20%"
+                       for m in ABLATION[1:]], fontsize=6.5)
+    c.set_xticks([]); c.set_xlabel("Backdoored models (sorted by full agent)")
+    for s in c.spines.values():
+        s.set_visible(False)
+    cb = fig.colorbar(im, ax=c, fraction=0.05, pad=0.03)
+    cb.set_label("ASR (%)", fontsize=7); cb.ax.tick_params(labelsize=6)
+    c.set_title("c  Per model", loc="left", fontweight="bold")
+    save(fig, FIG_DIR / "ablation", f"""
+Where does the removal agent's success come from? {len(rows)} backdoored eval models, Nemotron 3 Ultra.
+Full agent: reads and edits the weights and runs the network (50 forward passes). Weights only: reads and
+edits the weights but cannot run the network. Probing only: runs the network (50 passes) and edits weights
+by position, but never sees a weight value. Random edit: the full agent's edit moved to random positions
+of the same tensors (mean of 10 draws; no LLM). (a) Held-out attack success rate; (b) clean accuracy; dots
+are models, black markers are means with 95% bootstrap CIs; hollow circles are edits that broke the
+network (clean accuracy below 20%, so ASR is low only because every image gets one class). (c) ASR per model and condition, models sorted
+by the full agent's ASR; × marks a broken network; row labels count models with ASR below 20% and a working
+network.""")
+
+
+FIGS = {"detect_llm": fig_detect_llm, "remove_llm": fig_remove_llm, "case_study": fig_case_study,
+        "ablation": fig_ablation}
 
 if __name__ == "__main__":
     ap = argparse.ArgumentParser()

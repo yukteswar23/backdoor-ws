@@ -108,7 +108,7 @@ def table_llm_runs():
                      f"{np.median([r['usage']['output'] for r in recs]) / 1e3:.1f}k & "
                      f"{np.median([r['seconds'] for r in recs]) / 60:.1f} & {unans} \\\\")
     rem = read_json(RESULTS_DIR / "agent_remove.json")["meta"]["llm"]
-    d = RESULTS_DIR / "llm_remove" / rem / "budget50"
+    d = RESULTS_DIR / "llm_remove" / rem / "full"
     res = [read_json(p / "result.json") for p in sorted(d.iterdir()) if (p / "result.json").exists()]
     usage = [read_json(p / "transcript.json")["usage"] for p in sorted(d.iterdir()) if (p / "result.json").exists()]
     lines.append(f"Remove (agent) & Nemotron 3 Ultra & {len(res)} & {np.median([r['turns'] for r in res]):.0f} & "
@@ -118,9 +118,27 @@ def table_llm_runs():
     return lines
 
 
+def table_ablation():
+    """Removal ablations: what the agent can do in each condition, and how well it removes the backdoor."""
+    rows = load_remove()
+    access = {"original": ("--", "--"), "random_edit": ("--", "--"), "agent_weights_only": ("yes", "no"),
+              "agent_probe_only": ("no", "50 passes"), "agent": ("yes", "50 passes")}
+    if not all(m in r for r in rows for m in access):
+        return ["% ablation results incomplete"]
+    lines = []
+    for m, (reads, runs) in access.items():
+        acc = _ci(*bootstrap_ci([r[m]["clean_acc"] for r in rows]), scale=100, fmt="{:.1f}")
+        asr = _ci(*bootstrap_ci([r[m]["asr"] for r in rows]), scale=100, fmt="{:.1f}")
+        n20 = (f"{sum(r[m]['asr'] < 0.2 and r[m]['clean_acc'] >= 0.2 for r in rows)}/{len(rows)}"
+               if m != "original" else "--")
+        label = METHOD_LABELS[m] if m != "agent" else "Agent, full"
+        lines.append(f"{label} & {reads} & {runs} & {acc} & {asr} & {n20} \\\\")
+    return lines
+
+
 if __name__ == "__main__":
     OUT.mkdir(parents=True, exist_ok=True)
     for name, fn in [("zoo", table_zoo), ("detect", table_detect), ("remove", table_remove),
-                     ("pattern", table_pattern), ("llm_runs", table_llm_runs)]:
+                     ("pattern", table_pattern), ("llm_runs", table_llm_runs), ("ablation", table_ablation)]:
         (OUT / f"{name}_rows.tex").write_text("\n".join(fn()) + "\n", encoding="utf-8")
         print("wrote", OUT / f"{name}_rows.tex")

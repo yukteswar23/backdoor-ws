@@ -1,6 +1,6 @@
 """NVIDIA API catalog backend for llm.stream() (OpenAI-compatible endpoint at integrate.api.nvidia.com).
 
-Same contract as gemini.py: takes the Anthropic-shaped request detect.py and remove.py build and
+Takes the Anthropic-shaped request detect.py and remove.py build and
 returns an Anthropic-shaped message, so the experiment code stays provider-neutral. Replies are
 streamed because long reasoning outputs can outlast a plain request. Every rate-limit header and
 429 is logged, since the free tier's limits are not documented in the responses.
@@ -16,7 +16,7 @@ from types import SimpleNamespace as NS
 import httpx
 import openai
 
-from .llm import ServiceUnavailable
+from .llm import AuthError, ServiceUnavailable
 
 BASE_URL = "https://integrate.api.nvidia.com/v1"
 MAX_RETRIES = 40
@@ -183,6 +183,8 @@ def stream(model: str, effort: str, system: str, messages: list, max_tokens: int
             _log_headers(e.response.headers)
             wait = float(e.response.headers.get("retry-after", 0) or 0) or wait
             print(f"  rate limited (429), waiting {wait:.0f}s: {str(e)[:200]}", flush=True)
+        except (openai.AuthenticationError, openai.PermissionDeniedError) as e:
+            raise AuthError(str(e)[:300]) from e
         except openai.APIStatusError as e:
             if e.status_code not in (408, 409) and e.status_code < 500:
                 raise  # a request the API rejects (e.g. too long) fails the same way every time

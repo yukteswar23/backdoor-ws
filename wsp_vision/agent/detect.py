@@ -89,6 +89,8 @@ def run_one(mid: str, mode: str) -> dict:
             messages=[{"role": "user", "content": build_content(state, mode)}],
             output_config={"format": {"type": "json_schema", "schema": SCHEMA}},
         )
+    except llm.AuthError:
+        raise  # a bad key is not this model's outcome: record nothing
     except llm.ServiceUnavailable as e:  # left unfinished; the next run retries it
         print(f"[{mode}] {mid} unavailable, will retry later: {e}", flush=True)
         return None
@@ -130,8 +132,12 @@ def main():
     ids = sorted(p.stem for p in (ZOO_DIR / "eval").glob("m_*.pt"))[: args.limit]
     modes = MODES if args.mode == "all" else [args.mode]
     jobs = [(m, mode) for mode in modes for m in ids]
-    with ThreadPoolExecutor(args.workers) as ex:
-        recs = list(ex.map(lambda j: run_one(*j), jobs))
+    try:
+        with ThreadPoolExecutor(args.workers) as ex:
+            recs = list(ex.map(lambda j: run_one(*j), jobs))
+    except llm.AuthError as e:
+        print(f"API key rejected, stopping: {e}", flush=True)
+        raise SystemExit(llm.AUTH_EXIT)
     done = [r for r in recs if r is not None]
     print(f"total ${sum(r['usage']['usd'] for r in done):.2f} over {len(done)} calls, "
           f"{len(recs) - len(done)} left for a later run")

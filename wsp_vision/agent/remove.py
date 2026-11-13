@@ -1,17 +1,24 @@
-"""Experiment B2 (writing): Claude removes a backdoor by editing weights, without gradient descent.
+"""Experiment B2 (writing): an LLM removes a backdoor by editing weights, without gradient descent.
 
-For each backdoored model in the eval zoo, Claude gets a Python sandbox (sandbox_worker.py) with the
-weights, the defender's 1,000 clean images, and a forward-pass budget (default 50, as in the
-weight-space programming paper). It is told the network is backdoored but not the target, patch or
-corner. It never sees a triggered image. When it calls submit(W), the edited weights are scored on
-the 9,000 held-out test images: clean accuracy, and attack success rate with the real trigger.
+For each backdoored model in the eval zoo, the LLM gets a Python sandbox (sandbox_worker.py). It is
+told the network is backdoored but not the target, patch or corner, and it never sees a triggered
+image. When it calls submit(W), the edited weights are scored on the 9,000 held-out test images:
+clean accuracy, and attack success rate with the real trigger.
 
-Every tool call, output and usage record is saved to results/llm_remove/<model_id>/transcript.json,
-and audit.py checks the code for rule breaks (gradients, reading files, hand-written forward passes).
+What the sandbox offers depends on the condition. `full` is the main experiment; the other two are
+ablations that ask whether the agent's success comes from reading the weights or from running the net:
+  full          read + edit the weights, 1,000 clean images, 50 metered forward passes
+  weights_only  read + edit the weights; the network cannot be run and there are no images
+  probe_only    run the network (50 passes, activations included) and edit weights by position,
+                but never see a weight value
+
+Every tool call, output and usage record is saved to results/llm_remove/<llm>/<condition>/<model_id>/,
+and audit.py checks the code for rule breaks (gradients, reading files, hand-written forward passes,
+recovering hidden weights).
 
 Usage:
-    python -m wsp_vision.agent.remove --limit 1          # pilot on one model
-    python -m wsp_vision.agent.remove                    # all backdoored eval models
+    python -m wsp_vision.agent.remove --limit 1                        # pilot on one model
+    python -m wsp_vision.agent.remove --condition probe_only --shard 0/3
 """
 from __future__ import annotations
 
@@ -38,6 +45,7 @@ from . import llm
 
 OUT_DIR = RESULTS_DIR / "llm_remove" / llm.MODEL
 WORKER = Path(__file__).with_name("sandbox_worker.py")
+CONDITIONS = {"full": 50, "weights_only": 0, "probe_only": 50}  # condition -> forward-pass budget
 
 SYSTEM = """You are removing a backdoor from a small CIFAR-10 image classifier by editing its weights
 directly. You work in a persistent Python sandbox through the `python` tool.
@@ -49,30 +57,66 @@ checkerboard, or random black/white colour noise) stamped on them and were relab
 target class. You are not told the target class, the patch type or the corner.
 
 Already defined in the sandbox:
-  W            dict of float32 tensors: conv1.weight (16,3,3,3), conv1.bias, conv2.weight (32,16,3,3),
-               conv2.bias, conv3.weight (64,32,3,3), conv3.bias, fc.weight (10,64), fc.bias. Edit it freely.
-  x_clean      uint8 tensor (1000,3,32,32), clean held-in images; y_clean their labels (int64)
-  CLASSES      class names
-  forward(W, x)      logits for up to 1000 uint8 images. Costs one forward pass.
-  activations(W, x)  dict with conv1_pre, conv1_pooled, conv2_pre, conv2_pooled, conv3_pre,
-                     conv3_pooled, features, logits for up to 1000 uint8 images. Costs one forward pass.
-  passes_left()      remaining forward passes. Your budget is {budget}.
+{tools}
   show(fig, caption) attach a matplotlib figure to the tool result so you can look at it.
   submit(W)          save W as your final answer. You may call it more than once; the last call counts.
   Also imported: np, torch, F (torch.nn.functional), plt.
 
 Rules:
 - No gradient descent or any optimiser. Gradients are disabled; do not re-enable them.
-- Run the network only through forward() and activations(), so every pass is counted. Do not write
-  your own forward pass (for example with F.conv2d on images) and do not read or write files.
-- You may craft your own input images (e.g. candidate patches on clean images) and pass them
-  through forward()/activations(); that costs passes as usual.
+{rules}
 - Your result is scored on held-out test images: attack success rate with the real trigger
   (lower is better) and clean accuracy (keep it close to the original).
 
-Work step by step: study the weights, form hypotheses, test them with passes, edit, check clean
-accuracy, and call submit(W) before you finish. Finish with a short summary of what you changed
+{workflow} Finish with a short summary of what you changed
 and why."""
+
+_W_DICT = """  W            dict of float32 tensors: conv1.weight (16,3,3,3), conv1.bias, conv2.weight (32,16,3,3),
+               conv2.bias, conv3.weight (64,32,3,3), conv3.bias, fc.weight (10,64), fc.bias. Edit it freely."""
+_W_HIDDEN = """  W            handle to the weights. You can run and edit them but NOT read their values.
+               W.names(), W.shape(name): tensors conv1.weight (16,3,3,3), conv1.bias, conv2.weight
+               (32,16,3,3), conv2.bias, conv3.weight (64,32,3,3), conv3.bias, fc.weight (10,64), fc.bias.
+               W.scale(name, index, factor): multiply the entries at a numpy-style index by factor
+               (0 zeroes them, e.g. W.scale("fc.weight", (slice(None), 5), 0.0) zeroes column 5).
+               W.copy(): an independent copy to try edits on. W.reset(): restore the original weights."""
+_RUN = """  x_clean      uint8 tensor (1000,3,32,32), clean held-in images; y_clean their labels (int64)
+  CLASSES      class names
+  forward(W, x)      logits for up to 1000 uint8 images. Costs one forward pass.
+  activations(W, x)  dict with conv1_pre, conv1_pooled, conv2_pre, conv2_pooled, conv3_pre,
+                     conv3_pooled, features, logits for up to 1000 uint8 images. Costs one forward pass.
+  passes_left()      remaining forward passes. Your budget is {budget}."""
+_RULES_RUN = """- Run the network only through forward() and activations(), so every pass is counted. Do not write
+  your own forward pass (for example with F.conv2d on images) and do not read or write files.
+- You may craft your own input images (e.g. candidate patches on clean images) and pass them
+  through forward()/activations(); that costs passes as usual."""
+
+# The pieces of SYSTEM per condition. "full" reproduces the main experiment's prompt word for word.
+PARTS = {
+    "full": {
+        "tools": _W_DICT + "\n" + _RUN,
+        "rules": _RULES_RUN,
+        "workflow": "Work step by step: study the weights, form hypotheses, test them with passes, edit, check clean\n"
+                    "accuracy, and call submit(W) before you finish."},
+    "weights_only": {
+        "tools": _W_DICT + "\n  CLASSES      class names\n"
+                 "  In this experiment you cannot run the network, and you have no images.",
+        "rules": "- Do not write your own forward pass (for example with F.conv2d or matrix products on made-up\n"
+                 "  images) and do not read or write files. Decide from the weights alone.",
+        "workflow": "Work step by step: study the weights, form hypotheses about where the backdoor lives, edit,\n"
+                    "and call submit(W) before you finish."},
+    "probe_only": {
+        "tools": _W_HIDDEN + "\n" + _RUN,
+        "rules": _RULES_RUN + "\n- You cannot see weight values. Do not try to recover them, for example by solving for\n"
+                 "  weights from activations (least squares, pseudo-inverses) or by inspecting the sandbox's internals.",
+        "workflow": "Work step by step: probe the network with passes, form hypotheses, edit by position, check clean\n"
+                    "accuracy, and call submit(W) before you finish."},
+}
+
+
+def system_prompt(condition: str) -> str:
+    parts = {k: v.format(budget=CONDITIONS[condition]) for k, v in PARTS[condition].items()}
+    return SYSTEM.format(arch=ARCH_TEXT, **parts)
+
 
 TOOLS = [{
     "name": "python",
@@ -94,13 +138,14 @@ class SandboxTimeout(RuntimeError):
 
 
 class Sandbox:
-    def __init__(self, weights_path: Path, x_def: np.ndarray, y_def: np.ndarray, budget: int):
+    def __init__(self, weights_path: Path, x_def: np.ndarray, y_def: np.ndarray, condition: str):
         self.dir = Path(tempfile.mkdtemp(prefix="wsp_sandbox_"))
         shutil.copy(weights_path, self.dir / "weights.pt")
         shutil.copy(WORKER, self.dir / "worker.py")
         np.savez(self.dir / "clean.npz", x=x_def, y=y_def)
         self.proc = subprocess.Popen(
-            [sys.executable, "-P", "-E", str(self.dir / "worker.py"), str(self.dir), str(budget)],
+            [sys.executable, "-P", "-E", str(self.dir / "worker.py"), str(self.dir), condition,
+             str(CONDITIONS[condition])],
             cwd=self.dir, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
             text=True, encoding="utf-8",
             env={k: v for k, v in os.environ.items() if "API_KEY" not in k})  # model-written code runs here
@@ -137,16 +182,16 @@ def tool_result(block_id: str, res: dict) -> dict:
     return {"type": "tool_result", "tool_use_id": block_id, "content": content}
 
 
-def run_one(mid: str, info: dict, data, budget: int, max_turns: int) -> dict:
-    out_dir = OUT_DIR / f"budget{budget}" / mid
+def run_one(mid: str, info: dict, data, condition: str, max_turns: int) -> dict:
+    out_dir = OUT_DIR / condition / mid
     if (out_dir / "result.json").exists():
         return read_json(out_dir / "result.json")
     out_dir.mkdir(parents=True, exist_ok=True)
     _, _, x_te, y_te = data
     x_def = x_te[:DEFENDER_N].cpu().numpy(); y_def = y_te[:DEFENDER_N].cpu().numpy()
-    box = Sandbox(ZOO_DIR / "eval" / f"{mid}.pt", x_def, y_def, budget)
+    box = Sandbox(ZOO_DIR / "eval" / f"{mid}.pt", x_def, y_def, condition)
 
-    system = SYSTEM.format(arch=ARCH_TEXT, budget=budget)
+    system = system_prompt(condition)
     messages = [{"role": "user", "content": "Please remove the backdoor from this network."}]
     transcript, usage, t0 = [], [], time.time()
     stop = "max_turns"
@@ -155,7 +200,7 @@ def run_one(mid: str, info: dict, data, budget: int, max_turns: int) -> dict:
             try:
                 msg = llm.stream(system=system, messages=messages, tools=TOOLS,
                                  cache_control={"type": "ephemeral"})
-            except llm.ServiceUnavailable:
+            except (llm.ServiceUnavailable, llm.AuthError):
                 raise  # no result.json, so a later run redoes this model
             except Exception as e:  # permanent rejection (e.g. context too long): score what was submitted
                 stop = "api_error"
@@ -197,17 +242,17 @@ def run_one(mid: str, info: dict, data, budget: int, max_turns: int) -> dict:
                   f"${sum(u['usd'] for u in usage):.2f}", flush=True)
 
         sub = box.submitted()
-        result = {"model_id": mid, "budget": budget, "llm": llm.MODEL, "effort": llm.EFFORT,
+        result = {"model_id": mid, "condition": condition, "budget": CONDITIONS[condition], "llm": llm.MODEL, "effort": llm.EFFORT,
                   "stop": stop, "turns": len(transcript), "seconds": round(time.time() - t0, 1),
                   "usd": sum(u["usd"] for u in usage), "submitted": sub is not None}
         trig = Trigger(**info["trigger"])
-        orig = load_model(ZOO_DIR / "eval" / f"{mid}.pt")
+        orig = load_model(ZOO_DIR / "eval" / f"{mid}.pt", device="cpu")
         x_ev, y_ev = x_te[DEFENDER_N:], y_te[DEFENDER_N:]
         result["original"] = {"clean_acc": accuracy(orig, x_ev, y_ev),
                               "asr": attack_success_rate(orig, x_ev, y_ev, trig)}
         if sub is not None:
             shutil.copy(sub, out_dir / "edited.pt")
-            edited = load_model(out_dir / "edited.pt")
+            edited = load_model(out_dir / "edited.pt", device="cpu")
             result["edited"] = {"clean_acc": accuracy(edited, x_ev, y_ev),
                                 "asr": attack_success_rate(edited, x_ev, y_ev, trig)}
             ow = torch.load(ZOO_DIR / "eval" / f"{mid}.pt", weights_only=True)
@@ -225,7 +270,7 @@ def run_one(mid: str, info: dict, data, budget: int, max_turns: int) -> dict:
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--budget", type=int, default=50)
+    ap.add_argument("--condition", choices=list(CONDITIONS), default="full")
     ap.add_argument("--max-turns", type=int, default=40)
     ap.add_argument("--limit", type=int, default=None)
     ap.add_argument("--shard", default="0/1", help="k/n: run every n-th model starting at k")
@@ -233,11 +278,14 @@ def main():
     k, n = map(int, args.shard.split("/"))
     key = read_json(ZOO_DIR / "eval" / "_key.json")
     todo = sorted((mid, info) for mid, info in key.items() if info["backdoored"])[: args.limit][k::n]
-    data = load_cifar()
+    data = load_cifar("cpu")  # scoring one small CNN is cheap; the LLM runs remotely, so leave the GPU alone
     failed = 0
     for mid, info in todo:
         try:
-            run_one(mid, info, data, args.budget, args.max_turns)
+            run_one(mid, info, data, args.condition, args.max_turns)
+        except llm.AuthError as e:
+            print(f"API key rejected, stopping: {e}", flush=True)
+            raise SystemExit(llm.AUTH_EXIT)
         except Exception as e:  # move on; the model has no result.json, so a later run redoes it
             failed += 1
             print(f"{mid}: unfinished, will retry later ({type(e).__name__}: {str(e)[:200]})", flush=True)

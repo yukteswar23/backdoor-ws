@@ -35,11 +35,14 @@ def load_detect() -> list[dict]:
 
 
 def load_remove() -> list[dict]:
-    """As load_detect, for removal. Until every model has an agent result the agent is left out."""
+    """As load_detect, for removal, plus the ablations (agent_weights_only, agent_probe_only, random_edit).
+    Until every model has an agent result the agent is left out."""
     rows = read_json(RESULTS_DIR / "remove_baselines.json")
-    path = RESULTS_DIR / "agent_remove.json"
-    extra = read_json(path)["models"] if path.exists() else {}
-    return [{**r, **extra.get(r["model_id"], {})} for r in rows]
+    for name in ["agent_remove.json", "random_edit.json"]:
+        path = RESULTS_DIR / name
+        extra = read_json(path)["models"] if path.exists() else {}
+        rows = [{**r, **extra.get(r["model_id"], {})} for r in rows]
+    return rows
 
 
 def _strip(ax, x, vals, color, rng, width=0.18):

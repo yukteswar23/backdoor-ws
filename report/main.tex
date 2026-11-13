@@ -53,9 +53,11 @@ weights, 1{,}000 clean images and a budget of 50 forward passes but no gradients
 probes the network with patches it designs itself, locates the neuron that carries the trigger, and
 edits a median of six weights. It removes the backdoor outright (attack success below 20\%) in 6 of
 20 networks, more than any baseline, with a mean attack success of 51.9\% against 42.8\% for the best
-baseline, and it beats that baseline on 11 of the 20 networks. The two approaches fail on different
-networks, which points to LLM-guided repair as a complement to, not a replacement for, classical
-defences. All code, models, transcripts and figures are released.
+baseline, and it beats that baseline on 11 of the 20 networks. Ablations show where this comes from:
+an agent that can only probe the network comes close (61.7\%), one that can only read the weights does
+much worse (77.7\%) yet reproduces the full agent's edit on the clearest case, and the same edits moved
+to random positions do nothing (89.5\%). The agent and the best baseline fail on different networks,
+which points to LLM-guided repair as a complement to, not a replacement for, classical defences. All code, models, transcripts and figures are released.
 \end{abstract}
 
 % ============================================================================
@@ -574,6 +576,69 @@ switch off, or switches off the wrong channel.
   \label{fig:case}
 \end{figure}
 
+\subsection{Ablations: does the agent read the weights or probe the network?}
+\label{sec:ablation}
+The agent can learn about a network in two ways: by reading the weights, or by running the network on
+inputs it designs and watching predictions and activations (probing). Either route can end in the same
+edit, so the main experiment cannot tell which one does the work. We therefore reran removal on the same
+20 models with the same LLM and prompt, removing one route at a time.
+\emph{Weights only}: the agent reads and edits every weight but cannot run the network and has no
+images. \emph{Probing only}: the agent runs the network (50 forward passes, activations included) and
+edits weights by position, for example ``multiply column 62 of \texttt{fc.weight} by 0'', but cannot
+read any weight value; the weights sit behind a handle that exposes only shapes, and the rules forbid
+solving for weights from activations. A third, \emph{random edit}, uses no LLM: it takes the full
+agent's edit on each model and applies it at random positions of the same tensors (10 draws). The audit
+flagged 3 probing-only transcripts; on inspection every hit was in a comment or a shape query, and no
+transcript in any condition broke a rule.
+
+\begin{table}[!htb]
+  \centering
+  \caption{\textbf{Removal ablations}, 20 backdoored evaluation models, Nemotron~3 Ultra. Means with
+  95\% bootstrap CIs on held-out images. The last column counts models brought below 20\% ASR with a
+  working network (clean accuracy at least 20\%).}
+  \label{tab:ablation}
+  \small
+  \begin{tabular}{lccccc}
+    \toprule
+    Condition & Reads weights & Runs network & Clean accuracy (\%) & Attack success (\%) & ASR $<$ 20\% \\
+    \midrule
+    \tabin{ablation_rows.tex}
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+\begin{figure}[!htb]
+  \centering
+  \includegraphics[width=\linewidth]{ablation.pdf}
+  \caption{\textbf{Where the agent's success comes from.} (a) Held-out ASR and (b) clean accuracy per
+  condition; dots are models, black markers means with 95\% bootstrap CIs; hollow circles are random
+  edits that broke the network (clean accuracy below 20\%). (c) ASR per model and condition, models
+  sorted by the full agent; $\times$ marks a broken network.}
+  \label{fig:ablation}
+\end{figure}
+
+Table~\ref{tab:ablation} and Figure~\ref{fig:ablation} give the answer: \emph{both routes matter, and
+probing matters more.} The ordering is random edit (89.5\% mean ASR), weights only (77.7\%), probing
+only (61.7\%), full agent (51.9\%). Paired by model, the full agent beats weights only clearly (mean
+difference $-25.8$ points, 95\% CI $[-43.5, -8.1]$; lower by more than 5 points on 11 models, higher on 1; Wilcoxon signed-rank
+$p=0.009$), but is not separable from probing only ($-9.9$ points, CI $[-28.9, 9.9]$, $p=0.25$).
+Probing only beats random edits ($p=0.03$); weights only does not resolve from them ($p=0.14$). The
+random-edit control also shows that the full agent's edits work because of \emph{where} they land, not
+because they are small: moved elsewhere, the same edits leave 89.5\% ASR, against 51.9\% in place
+($p=0.002$).
+
+The per-model view is more informative than the means. Reading alone solves 2 models, and they are
+telling: on \texttt{m\_27c068c4} (the case study) the weights-only agent, which never ran the network,
+submitted \emph{exactly} the full agent's edit, zeroing the ten classifier weights of channel 62
+(ASR 8\%), while the probing-only agent, unable to see that channel 62 stands out, scaled down the whole
+\emph{cat} row and left the backdoor in place (93\%). On \texttt{m\_47995f26} the weights-only edit shares
+8 of its 9 weights with the full agent's. Probing alone solves 5 models, three of them also solved by the
+full agent. Five of the full agent's six successes are thus reached by one route alone, two by reading and
+three by probing: some backdoors announce themselves in a weight that stands out, others are found only
+by experiment. Neither route alone reaches the full agent's count. Two caveats apply. Each condition was run once, and LLM runs vary: the two models
+used to pilot this ablation were solved by probing only but not by the full agent. With 20 models, only
+large differences are resolved.
+
 % ============================================================================
 \section{Discussion}
 \paragraph{Why reading fails and writing works.}
@@ -586,6 +651,15 @@ models. In removal, the same model can compute statistics in code, run controlle
 their results. The hard part of reading, comparing many numbers, becomes a one-line computation, and
 what remains is forming and testing hypotheses, which the LLM does well.
 
+\paragraph{Reading and probing are complementary.}
+The ablations (Section~\ref{sec:ablation}) refine this picture. Most of the agent's removal power comes
+from probing: designing candidate triggers and watching the network respond, a black-box search the LLM
+runs well. Reading the weights still contributes. Without any forward pass the agent removed two
+backdoors, with the same or nearly the same edit as the full agent, and on one of them (the case study)
+the probing agent, which could not see that one channel stands out, missed that edit. The full agent does
+best, consistent with each route covering cases the other misses: the weights suggest where to look, and
+experiments decide.
+
 \paragraph{What the agent adds.}
 The agent's repairs are targeted: it edits a median of six weights, while the gradient-based baselines
 change every weight in the network. This keeps clean accuracy intact when the target neuron is purely
@@ -596,8 +670,9 @@ calling a classical repair.
 
 \paragraph{Limitations.}
 The evaluation zoo has 40 models (20 backdoored), so confidence intervals are wide; differences such as
-51.9\% versus 42.8\% mean ASR are not statistically resolved. Each LLM was run once per model, with
-default sampling, so run-to-run variation is not measured. Detection modes used two different LLMs,
+51.9\% versus 42.8\% mean ASR are not statistically resolved. Each LLM was run once per model and condition, with
+default sampling, so run-to-run variation is not measured; the ablation pilot suggests it is large (two
+models solved by probing only were not solved by the full agent). Detection modes used two different LLMs,
 because only one reads images, so the comparison between text and image modes is confounded with the
 model. Seven detection calls produced no answer because the LLM exhausted its output budget while
 reasoning; they are counted as uninformative. All networks share one small architecture without batch
@@ -614,9 +689,9 @@ we read in full.
   \item \textbf{Combine the agent with classical repairs.} Give the agent Neural Cleanse, fine-pruning
     and unlearning as tools and let it choose from its own diagnosis, approaching the oracle
     combination (27.8\% mean ASR) without knowing the ASR.
-  \item \textbf{Vary the budget and the models.} Sweep the forward-pass budget (0, 10, 50, 200) to
-    separate reasoning over weights from empirical probing; repeat runs to measure variance; compare
-    stronger frontier models with the open models used here.
+  \item \textbf{Vary the budget and the models.} The ablations fix the two ends (0 and 50 forward
+    passes); intermediate budgets (5, 10, 20) would show how many experiments reading saves. Repeat runs
+    to measure variance, and compare stronger frontier models with the open models used here.
   \item \textbf{Harder attacks and larger networks.} Blended and warping triggers, clean-label
     poisoning, multiple targets, attacks designed to hide from weight statistics, and architectures
     with batch normalisation and residual connections, where single weights are harder to read.
@@ -633,8 +708,10 @@ weight as text or images and no way to compute, they detect backdoors only sligh
 and find the target class only when a simple weight statistic does. As writers, they are competitive:
 an LLM agent with a Python sandbox, a small forward-pass budget and no gradients finds the backdoor
 neuron by its own experiments, removes the backdoor with a handful of weight edits, and succeeds on
-networks where the best classical defence fails. Weight-space auditing by LLMs works best when the LLM
-can test its hypotheses, not when it must judge by reading alone.
+networks where the best classical defence fails. Ablations show that most of this comes from
+probing the network, while reading the weights alone solves a few cases, including one that
+probing alone misses. Weight-space auditing by LLMs works best when the LLM can test its hypotheses, not
+when it must judge by reading alone.
 
 % ============================================================================
 \appendix
@@ -652,6 +729,7 @@ and can be rebuilt without retraining or new API calls.
   Train both zoos (resumable) & \texttt{bash run\_zoo.sh} \\
   Baselines, then figures & \texttt{bash run\_baselines.sh} \\
   LLM experiments, audit, scoring & \texttt{NVIDIA\_API\_KEY=\dots\ bash run\_nvidia.sh} \\
+  Removal ablations & \texttt{NVIDIA\_API\_KEY=\dots\ bash run\_ablation.sh} \\
   Figures and diagrams & \texttt{python -m wsp\_vision.plots.\{figures,llm\_figures,diagrams\}} \\
   This PDF (tables included) & \texttt{bash report/build.sh} \\
   \bottomrule
@@ -661,7 +739,8 @@ and can be rebuilt without retraining or new API calls.
 (about 1.5\,h for 120 models); Neural Cleanse takes about 97\,s per model; the full baseline suite took
 1.6\,h. The LLM runs used NVIDIA's free API catalog, which is rate-limited (in our measurement, a burst
 of about 30 requests was accepted within seconds before further requests were refused); with three removal episodes and up to seven detection calls in parallel, all LLM
-experiments finished in under three hours.
+experiments finished in under three hours. The two LLM ablations took a further 1.5\,h (probing only
+about 2.4\,min and weights only about 10\,min per model, median), with scoring on the CPU.
 
 \section{Prompt summary}
 \textbf{Detection} (system prompt, abridged): the LLM is told it audits small CIFAR-10 classifiers for
