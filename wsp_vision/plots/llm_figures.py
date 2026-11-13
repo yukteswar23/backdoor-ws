@@ -244,8 +244,59 @@ by the full agent's ASR; × marks a broken network; row labels count models with
 network.""")
 
 
+# ============================================================================ repeat runs
+AGENT_CONDITIONS = ["agent_weights_only", "agent_probe_only", "agent"]
+
+
+def _runs(rows, base):
+    """Columns holding the runs of one condition (base, base_run2, ...) present for every model."""
+    cols = [base] + sorted({k for r in rows for k in r if k.startswith(base + "_run")})
+    return [c for c in cols if all(c in r for r in rows)]
+
+
+def fig_repeats():
+    rows = load_remove()
+    runs = {m: _runs(rows, m) for m in AGENT_CONDITIONS}
+    if min(len(v) for v in runs.values()) < 2:
+        print("repeats: fewer than two complete runs per condition, skipped"); return
+    n_runs = min(len(v) for v in runs.values())
+    runs = {m: v[:n_runs] for m, v in runs.items()}
+    fig, (a, b, c) = plt.subplots(1, 3, figsize=(7.2, 2.6), gridspec_kw={"width_ratios": [1.1, 1, 1]})
+    rng = np.random.default_rng(0)
+    for i, m in enumerate(AGENT_CONDITIONS):
+        per_run = [100 * np.mean([r[col]["asr"] for r in rows]) for col in runs[m]]
+        a.scatter(i + np.linspace(-0.12, 0.12, n_runs), per_run, s=16, color=METHOD_COLORS[m], zorder=2,
+                  edgecolor="black", lw=0.4)
+        avg = [100 * np.mean([r[col]["asr"] for col in runs[m]]) for r in rows]
+        v, lo, hi = bootstrap_ci(avg)
+        a.errorbar(i + 0.3, v, yerr=[[v - lo], [hi - v]], fmt="D", color="black", ms=4, capsize=3, lw=1)
+        spread = [100 * (max(r[col]["asr"] for col in runs[m]) - min(r[col]["asr"] for col in runs[m])) for r in rows]
+        _strip(b, i, spread, METHOD_COLORS[m], rng, width=0.16)
+        solved = [sum(r[col]["asr"] < 0.2 and r[col]["clean_acc"] >= 0.2 for r in rows) for col in runs[m]]
+        ever = sum(any(r[col]["asr"] < 0.2 and r[col]["clean_acc"] >= 0.2 for col in runs[m]) for r in rows)
+        c.scatter(i + np.linspace(-0.1, 0.1, n_runs), solved, s=16, color=METHOD_COLORS[m], edgecolor="black", lw=0.4, zorder=2)
+        c.scatter(i + 0.25, ever, marker="_", s=120, color="black", zorder=3)
+    labels = ["Weights\nonly", "Probe\nonly", "Full\nagent"]
+    for ax in (a, b, c):
+        ax.set_xticks(range(len(AGENT_CONDITIONS))); ax.set_xticklabels(labels)
+        ax.set_xlim(-0.5, len(AGENT_CONDITIONS) - 0.4)
+    a.set_ylim(0, 100); a.set_ylabel("Mean ASR over 20 models (%)")
+    a.set_title("a  Per run and mean", loc="left", fontweight="bold")
+    b.set_ylim(-3, 103); b.set_ylabel("ASR range across runs (pt)")
+    b.set_title("b  Run-to-run spread", loc="left", fontweight="bold")
+    c.set_ylim(0, 20); c.set_ylabel("Models with ASR < 20%"); c.set_yticks(range(0, 21, 4))
+    c.set_title("c  Removed", loc="left", fontweight="bold")
+    save(fig, FIG_DIR / "repeats", f"""
+Run-to-run variation of the removal agent: {n_runs} independent runs of each condition on the same 20
+backdoored eval models (Nemotron 3 Ultra, same prompts). (a) Mean held-out ASR of each run (coloured
+dots) and the mean over runs with a 95% bootstrap CI over models (black diamond; each model's ASR
+averaged over its runs). (b) For each model, the range of its ASR across runs (max minus min); black
+markers are means with 95% bootstrap CIs. (c) Number of models brought below 20% ASR with a working
+network in each run (dots) and in at least one run (black bar).""")
+
+
 FIGS = {"detect_llm": fig_detect_llm, "remove_llm": fig_remove_llm, "case_study": fig_case_study,
-        "ablation": fig_ablation}
+        "ablation": fig_ablation, "repeats": fig_repeats}
 
 if __name__ == "__main__":
     ap = argparse.ArgumentParser()

@@ -4,7 +4,7 @@
 `review` patterns are legal in some uses (F.conv2d on weights is fine, on images it is an uncounted
 forward pass) and need a human look. The ablations add their own: in probe_only, recovering the hidden
 weight values; in weights_only, any hand-written pass over images. Writes
-results/llm_remove/<llm>/audit.json, keyed by condition and model.
+results/llm_remove/<llm>/audit.json, keyed by run directory (condition, or condition_run<k>) and model.
 
 Usage:
     python -m wsp_vision.agent.audit
@@ -31,11 +31,12 @@ EXTRA = {
 }
 
 
-def audit_condition(condition: str) -> dict:
+def audit_dir(name: str) -> dict:
+    condition = name.split("_run")[0]
     hard = HARD + EXTRA.get(condition, {}).get("hard", [])
     review = REVIEW + EXTRA.get(condition, {}).get("review", [])
     report = {}
-    for path in sorted((OUT_DIR / condition).glob("*/transcript.json")):
+    for path in sorted((OUT_DIR / name).glob("*/transcript.json")):
         turns = json.loads(path.read_text())["transcript"]
         code = [c.get("code", "") for t in turns for c in t["tool_calls"]]
         hits = lambda pats: sorted({p for p in pats for c in code if re.search(p, c)})
@@ -44,7 +45,9 @@ def audit_condition(condition: str) -> dict:
 
 
 def main():
-    report = {c: audit_condition(c) for c in CONDITIONS if (OUT_DIR / c).exists()}
+    names = sorted(d.name for d in OUT_DIR.iterdir() if d.is_dir() and d.name.split("_run")[0] in CONDITIONS) \
+        if OUT_DIR.exists() else []
+    report = {n: audit_dir(n) for n in names}
     if not report:
         print(f"no removal transcripts under {OUT_DIR}; set WSP_LLM to the model that ran them"); return
     write_json(report, OUT_DIR / "audit.json")

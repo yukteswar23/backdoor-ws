@@ -1,7 +1,8 @@
 """Join the LLM's answers with the ground truth, in the format the figures and tables read.
 
 Writes results/agent_detect.json and results/agent_remove.json, keyed by model id; removal has one
-column per condition (agent = full, agent_weights_only, agent_probe_only). Only here do the
+column per condition (agent = full, agent_weights_only, agent_probe_only), and repeats get a _run<k>
+suffix (agent_run2, ...). Only here do the
 agent's outputs meet zoo/eval/_key.json. A model the agent returned no answer for counts against it:
 no detection answer gets p=0.5 and a wrong target; no submitted weights counts as the original model.
 
@@ -19,6 +20,16 @@ from .detect import MODES
 from .remove import CONDITIONS, OUT_DIR as REMOVE_DIR
 
 REMOVE_COLUMNS = {c: "agent" if c == "full" else f"agent_{c}" for c in CONDITIONS}
+
+
+def remove_runs() -> dict:
+    """Run directory -> column: full -> agent, probe_only_run2 -> agent_probe_only_run2, ..."""
+    out = {}
+    for d in sorted(REMOVE_DIR.iterdir()) if REMOVE_DIR.exists() else []:
+        cond, _, run = d.name.partition("_run")
+        if d.is_dir() and cond in CONDITIONS:
+            out[d.name] = REMOVE_COLUMNS[cond] + (f"_run{run}" if run else "")
+    return out
 
 # Image modes need a model with image input, so each mode may name its own LLM:
 # WSP_DETECT_LLMS="text=<model>,image=<model>,text_image=<model>" (default: WSP_LLM for every mode).
@@ -47,7 +58,7 @@ def main():
     print("detect", meta)
 
     rem, stops = {}, {}
-    for cond, col in REMOVE_COLUMNS.items():
+    for cond, col in remove_runs().items():
         for mid, info in key.items():
             p = REMOVE_DIR / cond / mid / "result.json"
             if info["backdoored"] and p.exists():

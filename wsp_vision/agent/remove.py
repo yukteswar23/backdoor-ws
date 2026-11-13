@@ -12,13 +12,17 @@ ablations that ask whether the agent's success comes from reading the weights or
   probe_only    run the network (50 passes, activations included) and edit weights by position,
                 but never see a weight value
 
-Every tool call, output and usage record is saved to results/llm_remove/<llm>/<condition>/<model_id>/,
+Each condition can be repeated (--run k) to measure run-to-run variation: run 1 is saved under
+<condition>/, later runs under <condition>_run<k>/.
+
+Every tool call, output and usage record is saved to results/llm_remove/<llm>/<run dir>/<model_id>/,
 and audit.py checks the code for rule breaks (gradients, reading files, hand-written forward passes,
 recovering hidden weights).
 
 Usage:
     python -m wsp_vision.agent.remove --limit 1                        # pilot on one model
     python -m wsp_vision.agent.remove --condition probe_only --shard 0/3
+    python -m wsp_vision.agent.remove --condition full --run 2       # a repeat of the main experiment
 """
 from __future__ import annotations
 
@@ -46,6 +50,10 @@ from . import llm
 OUT_DIR = RESULTS_DIR / "llm_remove" / llm.MODEL
 WORKER = Path(__file__).with_name("sandbox_worker.py")
 CONDITIONS = {"full": 50, "weights_only": 0, "probe_only": 50}  # condition -> forward-pass budget
+
+
+def run_dir(condition: str, run: int = 1) -> str:
+    return condition if run == 1 else f"{condition}_run{run}"
 
 SYSTEM = """You are removing a backdoor from a small CIFAR-10 image classifier by editing its weights
 directly. You work in a persistent Python sandbox through the `python` tool.
@@ -182,8 +190,8 @@ def tool_result(block_id: str, res: dict) -> dict:
     return {"type": "tool_result", "tool_use_id": block_id, "content": content}
 
 
-def run_one(mid: str, info: dict, data, condition: str, max_turns: int) -> dict:
-    out_dir = OUT_DIR / condition / mid
+def run_one(mid: str, info: dict, data, condition: str, max_turns: int, run: int = 1) -> dict:
+    out_dir = OUT_DIR / run_dir(condition, run) / mid
     if (out_dir / "result.json").exists():
         return read_json(out_dir / "result.json")
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -242,7 +250,7 @@ def run_one(mid: str, info: dict, data, condition: str, max_turns: int) -> dict:
                   f"${sum(u['usd'] for u in usage):.2f}", flush=True)
 
         sub = box.submitted()
-        result = {"model_id": mid, "condition": condition, "budget": CONDITIONS[condition], "llm": llm.MODEL, "effort": llm.EFFORT,
+        result = {"model_id": mid, "condition": condition, "run": run, "budget": CONDITIONS[condition], "llm": llm.MODEL, "effort": llm.EFFORT,
                   "stop": stop, "turns": len(transcript), "seconds": round(time.time() - t0, 1),
                   "usd": sum(u["usd"] for u in usage), "submitted": sub is not None}
         trig = Trigger(**info["trigger"])
@@ -271,6 +279,7 @@ def run_one(mid: str, info: dict, data, condition: str, max_turns: int) -> dict:
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--condition", choices=list(CONDITIONS), default="full")
+    ap.add_argument("--run", type=int, default=1, help="repeat index; run 1 is the original experiment")
     ap.add_argument("--max-turns", type=int, default=40)
     ap.add_argument("--limit", type=int, default=None)
     ap.add_argument("--shard", default="0/1", help="k/n: run every n-th model starting at k")
@@ -282,7 +291,7 @@ def main():
     failed = 0
     for mid, info in todo:
         try:
-            run_one(mid, info, data, args.condition, args.max_turns)
+            run_one(mid, info, data, args.condition, args.max_turns, args.run)
         except llm.AuthError as e:
             print(f"API key rejected, stopping: {e}", flush=True)
             raise SystemExit(llm.AUTH_EXIT)
