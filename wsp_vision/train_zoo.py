@@ -9,6 +9,7 @@ backdoored models so that training length or optimiser settings cannot give the 
 Usage:
     python -m wsp_vision.train_zoo --split meta_train --n 120
     python -m wsp_vision.train_zoo --split eval --n 40
+    python -m wsp_vision.train_zoo --split confirm --n 40   # fresh models to confirm pre-registered results
 """
 from __future__ import annotations
 
@@ -84,12 +85,12 @@ def train_one(cfg: dict, data, bs: int = 256) -> tuple[SmallCNN, dict]:
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--split", required=True, choices=["meta_train", "eval", "smoke"])
+    ap.add_argument("--split", required=True, choices=["meta_train", "eval", "confirm", "smoke"])
     ap.add_argument("--n", type=int, required=True, help="total models; half are backdoored")
     ap.add_argument("--seed", type=int, default=None)
     args = ap.parse_args()
 
-    split_seed = args.seed if args.seed is not None else {"meta_train": 1, "eval": 2, "smoke": 3}[args.split]
+    split_seed = args.seed if args.seed is not None else {"meta_train": 1, "eval": 2, "smoke": 3, "confirm": 4}[args.split]
     rng = np.random.default_rng(split_seed)
     out_dir = ZOO_DIR / args.split
     key_path = out_dir / "_key.json"

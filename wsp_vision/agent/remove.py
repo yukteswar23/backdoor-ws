@@ -13,7 +13,8 @@ ablations that ask whether the agent's success comes from reading the weights or
                 but never see a weight value
 
 Each condition can be repeated (--run k) to measure run-to-run variation: run 1 is saved under
-<condition>/, later runs under <condition>_run<k>/.
+<condition>/, later runs under <condition>_run<k>/. --split confirm runs on the fresh confirmation zoo
+and saves under <llm>/confirm/<run dir>/.
 
 Every tool call, output and usage record is saved to results/llm_remove/<llm>/<run dir>/<model_id>/,
 and audit.py checks the code for rule breaks (gradients, reading files, hand-written forward passes,
@@ -54,6 +55,11 @@ CONDITIONS = {"full": 50, "weights_only": 0, "probe_only": 50}  # condition -> f
 
 def run_dir(condition: str, run: int = 1) -> str:
     return condition if run == 1 else f"{condition}_run{run}"
+
+
+def split_dir(split: str) -> Path:
+    """Where a zoo split's removal results live; the eval split keeps its original location."""
+    return OUT_DIR if split == "eval" else OUT_DIR / split
 
 SYSTEM = """You are removing a backdoor from a small CIFAR-10 image classifier by editing its weights
 directly. You work in a persistent Python sandbox through the `python` tool.
@@ -190,14 +196,16 @@ def tool_result(block_id: str, res: dict) -> dict:
     return {"type": "tool_result", "tool_use_id": block_id, "content": content}
 
 
-def run_one(mid: str, info: dict, data, condition: str, max_turns: int, run: int = 1) -> dict:
-    out_dir = OUT_DIR / run_dir(condition, run) / mid
+def run_one(mid: str, info: dict, data, condition: str, max_turns: int, run: int = 1,
+            split: str = "eval") -> dict:
+    out_dir = split_dir(split) / run_dir(condition, run) / mid
+    weights = ZOO_DIR / split / f"{mid}.pt"
     if (out_dir / "result.json").exists():
         return read_json(out_dir / "result.json")
     out_dir.mkdir(parents=True, exist_ok=True)
     _, _, x_te, y_te = data
     x_def = x_te[:DEFENDER_N].cpu().numpy(); y_def = y_te[:DEFENDER_N].cpu().numpy()
-    box = Sandbox(ZOO_DIR / "eval" / f"{mid}.pt", x_def, y_def, condition)
+    box = Sandbox(weights, x_def, y_def, condition)
 
     system = system_prompt(condition)
     messages = [{"role": "user", "content": "Please remove the backdoor from this network."}]
@@ -254,7 +262,7 @@ def run_one(mid: str, info: dict, data, condition: str, max_turns: int, run: int
                   "stop": stop, "turns": len(transcript), "seconds": round(time.time() - t0, 1),
                   "usd": sum(u["usd"] for u in usage), "submitted": sub is not None}
         trig = Trigger(**info["trigger"])
-        orig = load_model(ZOO_DIR / "eval" / f"{mid}.pt", device="cpu")
+        orig = load_model(weights, device="cpu")
         x_ev, y_ev = x_te[DEFENDER_N:], y_te[DEFENDER_N:]
         result["original"] = {"clean_acc": accuracy(orig, x_ev, y_ev),
                               "asr": attack_success_rate(orig, x_ev, y_ev, trig)}
@@ -263,7 +271,7 @@ def run_one(mid: str, info: dict, data, condition: str, max_turns: int, run: int
             edited = load_model(out_dir / "edited.pt", device="cpu")
             result["edited"] = {"clean_acc": accuracy(edited, x_ev, y_ev),
                                 "asr": attack_success_rate(edited, x_ev, y_ev, trig)}
-            ow = torch.load(ZOO_DIR / "eval" / f"{mid}.pt", weights_only=True)
+            ow = torch.load(weights, weights_only=True)
             ew = torch.load(out_dir / "edited.pt", weights_only=True)
             changed = sum(int((ow[k] != ew[k]).sum()) for k in ow)
             result["weights_changed"] = changed
@@ -280,18 +288,19 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--condition", choices=list(CONDITIONS), default="full")
     ap.add_argument("--run", type=int, default=1, help="repeat index; run 1 is the original experiment")
+    ap.add_argument("--split", default="eval", choices=["eval", "confirm"])
     ap.add_argument("--max-turns", type=int, default=40)
     ap.add_argument("--limit", type=int, default=None)
     ap.add_argument("--shard", default="0/1", help="k/n: run every n-th model starting at k")
     args = ap.parse_args()
     k, n = map(int, args.shard.split("/"))
-    key = read_json(ZOO_DIR / "eval" / "_key.json")
+    key = read_json(ZOO_DIR / args.split / "_key.json")
     todo = sorted((mid, info) for mid, info in key.items() if info["backdoored"])[: args.limit][k::n]
     data = load_cifar("cpu")  # scoring one small CNN is cheap; the LLM runs remotely, so leave the GPU alone
     failed = 0
     for mid, info in todo:
         try:
-            run_one(mid, info, data, args.condition, args.max_turns, args.run)
+            run_one(mid, info, data, args.condition, args.max_turns, args.run, args.split)
         except llm.AuthError as e:
             print(f"API key rejected, stopping: {e}", flush=True)
             raise SystemExit(llm.AUTH_EXIT)

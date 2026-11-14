@@ -15,6 +15,7 @@ Removal (all get the same 1,000 clean images, never triggered images)
 Usage:
     python -m wsp_vision.baselines detect
     python -m wsp_vision.baselines remove
+    python -m wsp_vision.baselines remove --split confirm   # writes results/remove_baselines_confirm.json
 """
 from __future__ import annotations
 
@@ -211,12 +212,12 @@ def weight_prune_outlier(model):
     return prune_channels(model, [j]), {"target": c, "channel": j}
 
 
-def run_remove():
+def run_remove(split: str = "eval"):
     _, _, x_te, y_te = load_cifar()
     x_def, y_def = x_te[:DEFENDER_N], y_te[:DEFENDER_N]
     x_ev, y_ev = x_te[DEFENDER_N:], y_te[DEFENDER_N:]
     rows = []
-    for mid, path, info in zoo("eval"):
+    for mid, path, info in zoo(split):
         if not info["backdoored"]:
             continue
         trig = Trigger(**info["trigger"])
@@ -235,11 +236,12 @@ def run_remove():
         rows.append(row)
         print(mid, {k: (round(v["clean_acc"], 3), round(v["asr"], 3)) for k, v in row.items()
                     if isinstance(v, dict) and "asr" in v}, flush=True)
-    write_json(rows, RESULTS_DIR / "remove_baselines.json")
+    write_json(rows, RESULTS_DIR / ("remove_baselines.json" if split == "eval" else f"remove_baselines_{split}.json"))
 
 
 if __name__ == "__main__":
     ap = argparse.ArgumentParser()
     ap.add_argument("task", choices=["detect", "remove"])
+    ap.add_argument("--split", default="eval", help="zoo split for removal (eval or confirm)")
     a = ap.parse_args()
-    run_detect() if a.task == "detect" else run_remove()
+    run_detect() if a.task == "detect" else run_remove(a.split)

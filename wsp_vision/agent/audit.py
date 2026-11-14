@@ -11,11 +11,12 @@ Usage:
 """
 from __future__ import annotations
 
+import argparse
 import json
 import re
 
 from ..common import write_json
-from .remove import CONDITIONS, OUT_DIR
+from .remove import CONDITIONS, split_dir
 
 HARD = [r"requires_grad", r"\.backward\(", r"autograd", r"enable_grad", r"set_grad_enabled\(\s*True",
         r"torch\.optim|optim\.(Adam|SGD)", r"\bopen\(", r"torch\.(load|save)\(", r"np\.(load|save)",
@@ -31,12 +32,12 @@ EXTRA = {
 }
 
 
-def audit_dir(name: str) -> dict:
+def audit_dir(root, name: str) -> dict:
     condition = name.split("_run")[0]
     hard = HARD + EXTRA.get(condition, {}).get("hard", [])
     review = REVIEW + EXTRA.get(condition, {}).get("review", [])
     report = {}
-    for path in sorted((OUT_DIR / name).glob("*/transcript.json")):
+    for path in sorted((root / name).glob("*/transcript.json")):
         turns = json.loads(path.read_text())["transcript"]
         code = [c.get("code", "") for t in turns for c in t["tool_calls"]]
         hits = lambda pats: sorted({p for p in pats for c in code if re.search(p, c)})
@@ -45,12 +46,15 @@ def audit_dir(name: str) -> dict:
 
 
 def main():
-    names = sorted(d.name for d in OUT_DIR.iterdir() if d.is_dir() and d.name.split("_run")[0] in CONDITIONS) \
-        if OUT_DIR.exists() else []
-    report = {n: audit_dir(n) for n in names}
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--split", default="eval", choices=["eval", "confirm"])
+    root = split_dir(ap.parse_args().split)
+    names = sorted(d.name for d in root.iterdir() if d.is_dir() and d.name.split("_run")[0] in CONDITIONS) \
+        if root.exists() else []
+    report = {n: audit_dir(root, n) for n in names}
     if not report:
-        print(f"no removal transcripts under {OUT_DIR}; set WSP_LLM to the model that ran them"); return
-    write_json(report, OUT_DIR / "audit.json")
+        print(f"no removal transcripts under {root}; set WSP_LLM to the model that ran them"); return
+    write_json(report, root / "audit.json")
     for c, rep in report.items():
         flagged = {m: r for m, r in rep.items() if r["hard"] or r["review"]}
         print(f"{c}: {len(rep)} transcripts audited, {len(flagged)} flagged")
