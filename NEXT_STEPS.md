@@ -30,13 +30,23 @@ Each agent condition was run 3 times on the same 20 models (180 removal episodes
   nothing. In one other episode (probe_only run 2, m_82f2fb37) the agent printed "checking if there's any
   way to reset passes", did nothing more, and submitted the original weights.
 
+### Best of 3 runs (2026-11-14, no API)
+`wsp_vision/agent/select_runs.py` → `results/best_of_k.json`, figure `best_of_k`, report Section 6.7.
+- **Defender check:** 60 candidate triggers on the 1,000 defender images give an estimated ASR. It tracks
+  the true ASR fairly well (Spearman 0.72) but sometimes reads high on networks that are already fixed.
+- **Pre-registered rule** (runs that keep defender accuracy within 5 points, then lowest estimate):
+  - probing only: 60.4% → 42.5% mean ASR (p = 0.009), 8/20 removed;
+  - full agent: 50.4% → 48.4% (n.s.). In 8 of its 11 misses, the best run was excluded by the 5-point filter.
+  - Oracle best run: full 22.3% (11/20 removed), probing only 27.3%.
+- **Exploratory** (threshold chosen after seeing the data): with a filter of 8 points or more, the picked
+  full agent reaches about 33% mean ASR (8/20), below NC unlearn's 42.8%. This needs confirming on fresh models.
+
 ## Next, in order of value
 
-1. **Best-of-k repair.** Runs vary so much that picking well among several runs could help a lot: 11
-   models are solved in at least one run. The defender can't see the true ASR, so the agent must pick
-   using its own reconstructed trigger. Test whether that self-check picks the good runs. This needs no
-   new API calls, because the 3 runs already exist and the agent's own trigger estimates are in the
-   transcripts.
+1. **Confirm best-of-k on a fresh zoo.** Train ~20 new backdoored models, run the full agent 3 times
+   each, and apply the selection rule with the threshold fixed in advance at 8 points. If it holds, the
+   picked agent beats the best classical baseline. That's the strongest claim available, and it needs
+   about 3 hours of API time plus about 30 minutes of training.
 2. **Intermediate budgets** (5, 10, 20 forward passes, full access). Shows how many experiments reading
    the weights saves.
 3. **Combine with classical repairs.** Give the agent NC unlearn and fine-pruning as tools.

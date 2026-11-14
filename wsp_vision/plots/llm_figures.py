@@ -295,8 +295,73 @@ markers are means with 95% bootstrap CIs. (c) Number of models brought below 20%
 network in each run (dots) and in at least one run (black bar).""")
 
 
+# ============================================================================ best of k runs
+BOK_CONDITIONS = {"weights_only": "agent_weights_only", "probe_only": "agent_probe_only", "full": "agent"}
+
+
+def fig_best_of_k():
+    path = RESULTS_DIR / "best_of_k.json"
+    if not path.exists():
+        print("best_of_k: run wsp_vision.agent.select_runs first, skipped"); return
+    from scipy.stats import spearmanr
+    d = read_json(path)["models"]
+    nc = 100 * np.mean([r["nc_unlearn"]["asr"] for r in load_remove()])
+    fig, (a, b, c) = plt.subplots(1, 3, figsize=(7.2, 2.6), gridspec_kw={"width_ratios": [1, 1.15, 1]})
+    est, true = [], []
+    for cond, col in BOK_CONDITIONS.items():
+        e = [100 * r["est_asr"] for m in d.values() for r in m[cond]["runs"]]
+        t = [100 * r["asr"] for m in d.values() for r in m[cond]["runs"]]
+        a.scatter(e, t, s=9, color=METHOD_COLORS[col], alpha=0.7, edgecolor="none",
+                  label="Agent, full" if col == "agent" else METHOD_LABELS[col])
+        est += e; true += t
+    a.plot([0, 100], [0, 100], ls=":", color=PALETTE["grey_dark"], lw=0.8)
+    a.set_xlim(-3, 103); a.set_ylim(-3, 103); a.set_aspect("equal")
+    a.set_xlabel("Estimated ASR, defender check (%)"); a.set_ylabel("True held-out ASR (%)")
+    a.text(3, 97, f"Spearman {spearmanr(est, true).correlation:.2f}\n{len(est)} episodes", va="top", fontsize=6.5)
+    a.legend(fontsize=5.5, loc="center left", bbox_to_anchor=(0.0, 0.66), handletextpad=0.1, borderaxespad=0.1,
+             markerscale=1.3)
+    a.set_title("a  Can the defender tell?", loc="left", fontweight="bold")
+
+    kinds = [("average run", lambda r: np.mean([x["asr"] for x in r["runs"]]), "o"),
+             ("picked", lambda r: r["picked"]["asr"], "D"),
+             ("best run (oracle)", lambda r: min(x["asr"] for x in r["runs"]), "v")]
+    for i, (cond, col) in enumerate(BOK_CONDITIONS.items()):
+        rows = [m[cond] for m in d.values()]
+        for j, (name, f, marker) in enumerate(kinds):
+            vals = [100 * f(r) for r in rows]
+            v, lo, hi = bootstrap_ci(vals)
+            x = i + (j - 1) * 0.25
+            b.errorbar(x, v, yerr=[[v - lo], [hi - v]], fmt=marker, ms=4.5, capsize=2.5, lw=0.9,
+                       color=METHOD_COLORS[col], mec="black", mew=0.5)
+            n20 = sum(f(r) < 0.2 for r in rows) if name != "average run" else \
+                np.mean([sum(r["runs"][k]["asr"] < 0.2 for r in rows) for k in range(len(rows[0]["runs"]))])
+            c.bar(x, n20, width=0.23, color=METHOD_COLORS[col], edgecolor="black", lw=0.5,
+                  hatch={"average run": "", "picked": "///", "best run (oracle)": "..."}[name])
+    b.axhline(nc, ls="--", color=METHOD_COLORS["nc_unlearn"], lw=0.9)
+    b.text(-0.45, nc - 1.5, "NC unlearn", color=METHOD_COLORS["nc_unlearn"], fontsize=6.5, ha="left", va="top")
+    labels = ["Weights\nonly", "Probe\nonly", "Full\nagent"]
+    for ax in (b, c):
+        ax.set_xticks(range(3)); ax.set_xticklabels(labels); ax.set_xlim(-0.5, 2.5)
+    for name, _, marker in kinds:
+        b.scatter([], [], marker=marker, color="white", edgecolor="black", s=18, label=name)
+    b.legend(fontsize=6, loc="upper right", handletextpad=0.2, borderaxespad=0.1)
+    b.set_ylim(0, 100); b.set_ylabel("Mean held-out ASR (%)")
+    b.set_title("b  Picking among 3 runs", loc="left", fontweight="bold")
+    c.set_ylim(0, 20); c.set_yticks(range(0, 21, 4)); c.set_ylabel("Models with ASR < 20%")
+    c.set_title("c  Backdoors removed", loc="left", fontweight="bold")
+    save(fig, FIG_DIR / "best_of_k", """
+Best-of-3 repair. Each agent condition was run three times per model; a defender picks one run without
+the real trigger. (a) For all 180 episodes, the defender's estimated ASR (the largest share of its 1,000
+clean images that any of 60 candidate triggers, from the family the agent was told about, sends to one
+class) against the true held-out ASR; dotted line is equality. (b) Mean held-out ASR of an average run,
+of the run picked by the defender (lowest estimated ASR among runs that keep defender clean accuracy
+within 5 points), and of the best run (oracle, uses the true ASR); 95% bootstrap CIs over 20 models;
+dashed line is NC unlearn. (c) Models below 20% ASR: per run on average (plain), picked (hatched),
+oracle (dotted).""")
+
+
 FIGS = {"detect_llm": fig_detect_llm, "remove_llm": fig_remove_llm, "case_study": fig_case_study,
-        "ablation": fig_ablation, "repeats": fig_repeats}
+        "ablation": fig_ablation, "repeats": fig_repeats, "best_of_k": fig_best_of_k}
 
 if __name__ == "__main__":
     ap = argparse.ArgumentParser()

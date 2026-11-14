@@ -65,6 +65,13 @@ across three runs the full agent removes 11 different backdoors, and only one of
 In 180 removal episodes the audit found one rule break (a hand-written forward pass after the budget
 ran out), and it did not change the result.
 
+**Best of three runs.** A defender can partly pick the good run without the real trigger, by stamping
+60 candidate triggers on its 1,000 clean images (estimate vs true ASR: Spearman 0.72). With the rule
+fixed in advance, picking takes probing only from 60.4% to 42.5% mean ASR (p = 0.009) but barely helps
+the full agent (50.4% → 48.4%): its best runs cost slightly more than the allowed 5 points of clean
+accuracy. Exploratory, with that threshold relaxed to 8 points or more: the picked full agent reaches
+about 33% (8/20 removed), below NC unlearn's 42.8%. `python -m wsp_vision.agent.select_runs` (no API).
+
 ## Reproduce
 
 ```bash
