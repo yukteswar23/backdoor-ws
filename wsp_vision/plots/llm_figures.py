@@ -429,8 +429,215 @@ losses are larger than its wins. (c) Models brought below 20% ASR (hollow: eval
 zoo; filled: fresh zoo); for the average run, the mean count over the three runs.""")
 
 
+# ============================================================================ detection: LLM vs weight heuristic
+def fig_detect_heuristic():
+    from scipy.stats import spearmanr
+    from ..baselines import fc_outlier_scores
+    rows = load_detect()
+    if not all("agent_text" in r for r in rows):
+        print("detect_heuristic: agent results missing, skipped"); return
+    scores = {r["model_id"]: fc_outlier_scores(torch.load(ZOO_DIR / "eval" / f"{r['model_id']}.pt", weights_only=True))
+              for r in rows}
+    fig, (a, b, c) = plt.subplots(1, 3, figsize=(7.2, 2.6), gridspec_kw={"width_ratios": [1.25, 0.9, 1]})
+    for bd, col, lab in [(False, CLEAN, "clean model"), (True, BACKDOORED, "backdoored model")]:
+        g = [r for r in rows if r["backdoored"] == bd]
+        a.scatter([scores[r["model_id"]].max() for r in g], [r["agent_text"]["p_backdoor"] for r in g],
+                  s=16, color=col, alpha=0.8, edgecolor="none", label=lab)
+    rho = spearmanr([scores[r["model_id"]].max() for r in rows], [r["agent_text"]["p_backdoor"] for r in rows]).correlation
+    a.axhline(0.5, ls=":", color=PALETTE["grey_dark"], lw=0.8)
+    a.set_xlabel("Weight heuristic: largest fc weight (SD)"); a.set_ylabel("LLM (text): stated P(backdoored)")
+    a.set_ylim(-0.03, 1.03); a.legend(fontsize=6.2, loc="lower right", handletextpad=0.1)
+    a.text(0.02, 0.04, f"Spearman {rho:.2f}", transform=a.transAxes, fontsize=6.5)
+    a.set_title("a  Heuristic score vs LLM", loc="left", fontweight="bold")
+
+    bd = [r for r in rows if r["backdoored"]]
+    h_ok = [r["weight_heuristic"]["target"] == r["true_target"] for r in bd]
+    l_ok = [r["agent_text"]["target"] == r["true_target"] for r in bd]
+    # rows: LLM right / wrong; columns: heuristic right / wrong
+    m = np.array([[sum(l and h for h, l in zip(h_ok, l_ok)), sum(l and not h for h, l in zip(h_ok, l_ok))],
+                  [sum(h and not l for h, l in zip(h_ok, l_ok)), sum(not h and not l for h, l in zip(h_ok, l_ok))]])
+    b.imshow(m, cmap="Blues", vmin=0, vmax=m.max() * 1.3)
+    for i in range(2):
+        for j in range(2):
+            b.text(j, i, str(m[i, j]), ha="center", va="center", fontsize=11, fontweight="bold")
+    b.set_xticks([0, 1]); b.set_xticklabels(["right", "wrong"]); b.set_yticks([0, 1]); b.set_yticklabels(["right", "wrong"])
+    b.set_xlabel("Weight heuristic's target"); b.set_ylabel("LLM's target")
+    for s in b.spines.values():
+        s.set_visible(False)
+    b.set_title("b  Target named", loc="left", fontweight="bold")
+
+    rng = np.random.default_rng(0)
+    for k, (ok, lab) in enumerate([(True, "LLM right"), (False, "LLM wrong")]):
+        vals = [scores[r["model_id"]][r["true_target"]] for r, o in zip(bd, l_ok) if o == ok]
+        _strip(c, k, vals, METHOD_COLORS["agent_text"] if ok else PALETTE["neutral"], rng, width=0.15)
+    c.set_xticks([0, 1]); c.set_xticklabels(["LLM names\nthe target", "LLM names\nanother class"])
+    c.set_ylabel("Target's largest fc weight (SD)"); c.set_xlim(-0.5, 1.5)
+    c.set_title("c  LLM right when", loc="left", fontweight="bold")
+    save(fig, FIG_DIR / "detect_heuristic", f"""
+The LLM reader finds the same signal as a one-line weight statistic, and only when it is strong (text
+mode, Nemotron 3 Ultra; evaluation zoo). (a) For all 40 models, the weight heuristic's score (largest
+classifier weight in standard deviations of all classifier weights) against the LLM's stated backdoor
+probability; the heuristic separates the groups along the horizontal axis, while the LLM's probabilities
+follow it only loosely (Spearman {rho:.2f}) and stay high for most clean models. (b) On the 20 backdoored models: whether the LLM and the heuristic name
+the true target class. Every model the LLM gets right, the heuristic also gets right. (c) The target
+class's largest classifier weight, for models where the LLM names the target and where it does not;
+black markers are means with 95% bootstrap CIs.""")
+
+
+# ============================================================================ outcomes: all-or-nothing
+def fig_outcomes():
+    paths = [RESULTS_DIR / f for f in ["best_of_k.json", "best_of_k_confirm.json", "remove_baselines_confirm.json"]]
+    if not all(p.exists() for p in paths):
+        print("outcomes: results missing, skipped"); return
+    zoos = {"Evaluation zoo": (read_json(paths[0])["models"], read_json(RESULTS_DIR / "remove_baselines.json")),
+            "Fresh zoo (pre-registered)": (read_json(paths[1])["models"], read_json(paths[2]))}
+    bins = [("removed  (< 20%)", 0, 0.2, "#3C8A4E"), ("partial  (20-80%)", 0.2, 0.8, "#E0B040"),
+            ("intact  (≥ 80%)", 0.8, 1.01, PALETTE["red_strong"])]
+    fig, axes = plt.subplots(1, 2, figsize=(7.2, 2.7), sharey=True)
+    for ax, (zoo, (sel, base)) in zip(axes, zoos.items()):
+        base = {r["model_id"]: r for r in base}
+        groups = {m: [base[i][m]["asr"] for i in sel] for m in ["weight_prune_outlier", "finetune", "fine_pruning", "nc_unlearn"]}
+        groups["agent_runs"] = [r["asr"] for i in sel for r in sel[i]["full"]["runs"]]
+        groups["agent_picked"] = [_pick(sel[i], "full", 0.08) for i in sel]
+        labels = {"weight_prune_outlier": "Prune outlier", "finetune": "Fine-tune", "fine_pruning": "Fine-pruning",
+                  "nc_unlearn": "NC unlearn", "agent_runs": "Agent, single run", "agent_picked": "Agent, picked (8 pt)"}
+        names = list(groups)
+        for y, m in enumerate(names):
+            v = np.array(groups[m]); left = 0
+            for k, (bl, lo, hi, col) in enumerate(bins):
+                f = float(((v >= lo) & (v < hi)).mean())
+                ax.barh(y, f, left=left, color=col, edgecolor="white", lw=0.6, height=0.7,
+                        label=bl if (y == 0 and ax is axes[0]) else None)
+                if f >= 0.08:
+                    ax.text(left + f / 2, y, f"{100 * f:.0f}%", ha="center", va="center", fontsize=6,
+                            color="white" if k != 1 else "black")
+                left += f
+        ax.set_yticks(range(len(names))); ax.set_yticklabels([labels[m] for m in names], fontsize=7)
+        ax.axhline(3.5, color=PALETTE["grey_dark"], lw=0.6)
+        ax.invert_yaxis(); ax.set_xlim(0, 1); ax.set_xticks([0, 0.5, 1]); ax.set_xticklabels(["0", "50", "100"])
+        ax.set_xlabel("Share of backdoored models (%)")
+        ax.set_title(("a  " if ax is axes[0] else "b  ") + zoo, loc="left", fontweight="bold", fontsize=8.5)
+    fig.legend(*axes[0].get_legend_handles_labels(), loc="lower center", ncol=3, fontsize=6.8,
+               bbox_to_anchor=(0.55, -0.04), title="Backdoor left after the defence (held-out ASR)", title_fontsize=6.8)
+    fig.tight_layout(rect=(0, 0.1, 1, 1))
+    save(fig, FIG_DIR / "outcomes", """
+The agent leaves backdoors intact far more often than the best baseline. Share of backdoored models whose backdoor is removed (held-out
+ASR below 20%), partly removed (20-80%) or left intact (80% or more) after each defence, on the evaluation
+zoo (a) and the fresh pre-registered zoo (b). Single-run agent bars pool all three runs (60 episodes per
+zoo); the picked run uses the defender's trigger check with the 8-point accuracy threshold. NC unlearn
+mostly weakens backdoors partly and rarely leaves one intact (15%); a single agent run leaves a third to
+half of them intact, and even the picked run leaves 10-30%.""", tight=False)
+
+
+# ============================================================================ anatomy of the edits
+ANATOMY_CONDS = [("weights_only", "agent_weights_only", "Weights only"), ("probe_only", "agent_probe_only", "Probing only"),
+                 ("full", "agent", "Full agent")]
+
+
+def fig_edit_anatomy():
+    path = RESULTS_DIR / "edit_anatomy.json"
+    if not path.exists():
+        print("edit_anatomy: run wsp_vision.agent.edit_anatomy first, skipped"); return
+    from scipy.stats import fisher_exact, spearmanr
+    d = read_json(path)
+    fig, (a, b, c) = plt.subplots(1, 3, figsize=(7.2, 2.7), gridspec_kw={"width_ratios": [1.1, 1.1, 1]})
+    layers = [("conv1/conv2", ["conv1.weight", "conv1.bias", "conv2.weight", "conv2.bias"]),
+              ("conv3", ["conv3.weight", "conv3.bias"]), ("classifier (fc)", ["fc.weight", "fc.bias"])]
+    lc = [PALETTE["neutral"], PALETTE["teal"], PALETTE["blue_main"]]
+    w = 0.26
+    for i, (cond, col, name) in enumerate(ANATOMY_CONDS):
+        eps = [e for m in d.values() for e in m["episodes"] if e["condition"] == cond and e["total"] > 0]
+        for k, (lname, keys) in enumerate(layers):
+            f = np.mean([any(e["changed"][kk] for kk in keys) for e in eps])
+            a.bar(i + (k - 1) * w, 100 * f, width=w * 0.92, color=lc[k], edgecolor="black", lw=0.4,
+                  label=lname if i == 0 else None)
+    a.set_xticks(range(3)); a.set_xticklabels([n.replace(" ", "\n", 1) for _, _, n in ANATOMY_CONDS], fontsize=7)
+    a.set_ylim(0, 128); a.set_yticks([0, 20, 40, 60, 80, 100]); a.set_ylabel("Episodes editing the layer (%)")
+    a.legend(fontsize=5.6, loc="upper center", ncol=3, handlelength=0.8, columnspacing=0.6, handletextpad=0.3, borderaxespad=0.1)
+    a.set_title("a  Where the edits land", loc="left", fontweight="bold")
+
+    rng = np.random.default_rng(0)
+    for i, (cond, col, name) in enumerate(ANATOMY_CONDS):
+        eps = [e for m in d.values() for e in m["episodes"] if e["condition"] == cond]
+        for k, hit in enumerate([True, False]):
+            vals = [100 * e["asr"] for e in eps if e["hits_channel"] == hit]
+            x = i + (k - 0.5) * 0.4
+            b.scatter(x + rng.uniform(-0.1, 0.1, len(vals)), vals, s=7, alpha=0.6, edgecolor="none",
+                      color=METHOD_COLORS[col] if hit else PALETTE["neutral"])
+            n_ok = sum(v < 20 for v in vals)
+            b.text(x, 103, ("hit" if hit else "miss") + f"\n{n_ok}/{len(vals)}", ha="center", va="bottom", fontsize=5.6,
+                   linespacing=1.0)
+    b.axhline(20, ls=":", color=PALETTE["grey_dark"], lw=0.8)
+    b.set_xticks(range(3)); b.set_xticklabels([n.replace(" ", "\n", 1) for _, _, n in ANATOMY_CONDS], fontsize=7)
+    b.set_ylim(-3, 122); b.set_yticks([0, 20, 40, 60, 80, 100]); b.set_ylabel("Held-out ASR after the edit (%)")
+    b.set_title("b  Hit or miss", loc="left", fontweight="bold")
+
+    share = [100 * m["share"] for m in d.values()]
+    asr = [100 * np.mean([e["asr"] for e in m["episodes"] if e["condition"] == "full"]) for m in d.values()]
+    for m, s_, a_ in zip(d.values(), share, asr):
+        c.scatter(s_, a_, s=16, color=METHOD_COLORS["agent"], alpha=0.8, edgecolor="none",
+                  marker="o" if m["split"] == "eval" else "^")
+    rho, p = spearmanr(share, asr)
+    c.set_xlabel("Main channel's share of backdoor (%)"); c.set_ylabel("Full agent, mean ASR (%)")
+    c.set_ylim(-3, 103)
+    c.scatter([], [], s=12, color=METHOD_COLORS["agent"], marker="o", label="evaluation zoo")
+    c.scatter([], [], s=12, color=METHOD_COLORS["agent"], marker="^", label="fresh zoo")
+    c.legend(fontsize=6, loc="lower left", handletextpad=0.1, borderaxespad=0.1)
+    c.text(0.97, 0.97, f"Spearman {rho:.2f}\np = {p:.3f}", transform=c.transAxes, ha="right", va="top", fontsize=6.5)
+    c.set_title("c  Concentrated backdoors", loc="left", fontweight="bold")
+    n_miss = sum(1 for m in d.values() for e in m["episodes"] if not e["hits_channel"])
+    save(fig, FIG_DIR / "edit_anatomy", f"""
+Anatomy of all {sum(len(m['episodes']) for m in d.values())} removal episodes (evaluation zoo: three conditions x three runs;
+fresh zoo: full agent x three runs). For analysis only, each model's backdoor channel is identified with the
+real trigger as the conv3 channel whose rise under the trigger adds most to the target logit. (a) Share of
+episodes whose edit changes each layer. (b) Held-out ASR after the edit, for edits that touch the backdoor
+channel (its classifier column, filter or bias; coloured, "hit") and edits that do not (grey, "miss"); the
+numbers give episodes that bring the model below 20% ASR. None of the {n_miss} edits that miss the channel removes the backdoor. (c) Share of the
+trigger's push towards the target carried by that one channel, against the full agent's mean ASR over three
+runs: the more concentrated the backdoor, the more often the agent removes it.""")
+
+
+# ============================================================================ what makes a backdoor removable
+def fig_predictors():
+    path = RESULTS_DIR / "edit_anatomy.json"
+    if not path.exists():
+        print("predictors: run wsp_vision.agent.edit_anatomy first, skipped"); return
+    from scipy.stats import spearmanr
+    d = {k: m for k, m in read_json(path).items() if m["split"] == "eval"}
+    fig, axes = plt.subplots(1, 3, figsize=(7.2, 2.5), sharey=True)
+    for ax, (cond, col, name) in zip(axes, ANATOMY_CONDS):
+        z = [m["target_weight_z"] for m in d.values()]
+        asr = [100 * np.mean([e["asr"] for e in m["episodes"] if e["condition"] == cond]) for m in d.values()]
+        for m, zi, ai in zip(d.values(), z, asr):
+            ax.scatter(zi, ai, s=18, color=METHOD_COLORS[col], edgecolor="black", lw=0.3, alpha=0.9,
+                       marker=PATTERN_MARKERS[m["trigger"]["pattern"]])
+        rho, p = spearmanr(z, asr)
+        low = cond == "probe_only"  # that panel has a point in the top-right corner
+        ax.text(0.97, 0.03 if low else 0.97,
+                f"Spearman {rho:.2f}\np = {p:.3f}" if p >= 0.001 else f"Spearman {rho:.2f}\np < 0.001",
+                transform=ax.transAxes, ha="right", va="bottom" if low else "top", fontsize=6.5,
+                bbox=dict(boxstyle="round,pad=0.2", fc="white", ec="none", alpha=0.85))
+        ax.set_xlabel("Target's largest fc weight (SD)")
+        ax.set_title("abc"[ANATOMY_CONDS.index((cond, col, name))] + "  " + name, loc="left", fontweight="bold", fontsize=8.5)
+        ax.set_ylim(-3, 108)
+    axes[0].set_ylabel("Mean ASR over 3 runs (%)")
+    for p_ in PATTERNS:
+        axes[0].scatter([], [], s=14, marker=PATTERN_MARKERS[p_], color="white", edgecolor="black", lw=0.6,
+                        label=p_.replace("_", " "))
+    axes[0].legend(fontsize=5.8, loc="lower left", handletextpad=0.1, borderaxespad=0.1)
+    save(fig, FIG_DIR / "predictors", """
+Reading needs a weight that stands out; probing does not. For each of the 20 backdoored evaluation
+models, how far the target class's largest classifier weight stands out (in standard deviations of all
+classifier weights) against the agent's mean held-out ASR over three runs, in each condition. Without
+forward passes (a), success depends strongly on that one weight; with forward passes but no weight values
+(b), it does not; the full agent (c) lies in between. Marker shape is the trigger pattern: white squares
+produce the most outlying weights, so for the weights-only agent the two go together.""")
+
+
 FIGS = {"detect_llm": fig_detect_llm, "remove_llm": fig_remove_llm, "case_study": fig_case_study,
-        "ablation": fig_ablation, "repeats": fig_repeats, "best_of_k": fig_best_of_k, "confirm": fig_confirm}
+        "ablation": fig_ablation, "repeats": fig_repeats, "best_of_k": fig_best_of_k, "confirm": fig_confirm,
+        "detect_heuristic": fig_detect_heuristic, "outcomes": fig_outcomes, "edit_anatomy": fig_edit_anatomy,
+        "predictors": fig_predictors}
 
 if __name__ == "__main__":
     ap = argparse.ArgumentParser()

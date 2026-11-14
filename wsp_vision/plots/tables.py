@@ -107,14 +107,21 @@ def table_llm_runs():
                      f"{np.median([r['usage']['input'] for r in recs]) / 1e3:.1f}k & "
                      f"{np.median([r['usage']['output'] for r in recs]) / 1e3:.1f}k & "
                      f"{np.median([r['seconds'] for r in recs]) / 60:.1f} & {unans} \\\\")
-    rem = read_json(RESULTS_DIR / "agent_remove.json")["meta"]["llm"]
-    d = RESULTS_DIR / "llm_remove" / rem / "full"
-    res = [read_json(p / "result.json") for p in sorted(d.iterdir()) if (p / "result.json").exists()]
-    usage = [read_json(p / "transcript.json")["usage"] for p in sorted(d.iterdir()) if (p / "result.json").exists()]
-    lines.append(f"Remove (agent) & Nemotron 3 Ultra & {len(res)} & {np.median([r['turns'] for r in res]):.0f} & "
-                 f"{np.median([sum(u['input'] for u in us) for us in usage]) / 1e3:.0f}k & "
-                 f"{np.median([sum(u['output'] for u in us) for us in usage]) / 1e3:.1f}k & "
-                 f"{np.median([r['seconds'] for r in res]) / 60:.1f} & {sum(not r['submitted'] for r in res)} \\\\")
+    rem = RESULTS_DIR / "llm_remove" / read_json(RESULTS_DIR / "agent_remove.json")["meta"]["llm"]
+    groups = [("Remove, full (eval)", [rem / "full", rem / "full_run2", rem / "full_run3"]),
+              ("Remove, weights only", [rem / "weights_only", rem / "weights_only_run2", rem / "weights_only_run3"]),
+              ("Remove, probing only", [rem / "probe_only", rem / "probe_only_run2", rem / "probe_only_run3"]),
+              ("Remove, full (fresh zoo)", [rem / "confirm" / "full", rem / "confirm" / "full_run2", rem / "confirm" / "full_run3"])]
+    for label, dirs in groups:
+        eps = [p for d in dirs if d.exists() for p in sorted(d.iterdir()) if (p / "result.json").exists()]
+        if not eps:
+            continue
+        res = [read_json(p / "result.json") for p in eps]
+        usage = [read_json(p / "transcript.json")["usage"] for p in eps]
+        lines.append(f"{label} & Nemotron 3 Ultra & {len(res)} & {np.median([r['turns'] for r in res]):.0f} & "
+                     f"{np.median([sum(u['input'] for u in us) for us in usage]) / 1e3:.0f}k & "
+                     f"{np.median([sum(u['output'] for u in us) for us in usage]) / 1e3:.1f}k & "
+                     f"{np.median([r['seconds'] for r in res]) / 60:.1f} & {sum(not r['submitted'] for r in res)} \\\\")
     return lines
 
 

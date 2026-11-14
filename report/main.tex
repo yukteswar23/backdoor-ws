@@ -32,7 +32,7 @@
 
 \title{\textbf{Reading Backdoors from Weights:\\Can Language-Model Agents Detect and Remove\\Neural Trojans by Inspecting and Editing Parameters?}}
 \author{Yukteswar}
-\date{November 11, 2026}
+\date{November 14, 2026}
 
 \begin{document}
 \maketitle
@@ -97,6 +97,12 @@ at the same time, before any LLM was run. Third, we ran the LLM experiments. The
 first specified for a frontier commercial model; to keep the study free to reproduce, it was run
 on openly available Nemotron models through NVIDIA's free API catalog~\citep{nvidia2026catalog},
 starting with a two-model pilot to check the input length, the tool loop and the rate limits.
+The first removal results were promising enough to need testing, so a fourth stage asked where they
+come from and whether they hold: ablations that remove the agent's ability to read the weights or to run
+the network, an analysis of every edit, three repeated runs of every condition, a method for picking a
+good run without knowing the trigger, and finally a pre-registered test on a freshly trained zoo.
+Figure~\ref{fig:roadmap} lists the eight experiments, the question each answers, and the answer.
+
 
 \begin{figure}[!htb]
   \centering
@@ -107,6 +113,14 @@ starting with a two-model pilot to check the input length, the tool loop and the
   a small forward-pass budget. The ground-truth key is written at training time and used only by the
   scorer.}
   \label{fig:overview}
+\end{figure}
+
+\begin{figure}[!htb]
+  \centering
+  \includegraphics[width=\linewidth]{roadmap.pdf}
+  \caption{\textbf{Roadmap of the study.} The eight experiments in the order they were run, the question
+  each answers, and the answer, with the section that reports it. Colour gives the status of the answer.}
+  \label{fig:roadmap}
 \end{figure}
 
 \paragraph{Contributions.}
@@ -120,12 +134,18 @@ starting with a two-model pilot to check the input length, the tool loop and the
     \emph{writing}, where an LLM agent edits the weights through code in a metered sandbox, with no
     gradients and no triggered data, and every transcript audited.
   \item \textbf{A matched comparison with seven conventional defences} (Section~\ref{sec:results}).
-    LLMs are weak readers (AUROC 0.61--0.65) but competitive writers: the agent removes the most
-    backdoors outright (6 of 20) with surgical edits of a few weights, and it succeeds on networks
-    where the best baseline fails.
-  \item \textbf{Mechanistic evidence} (Section~\ref{sec:case}): a step-by-step account of an
-    episode in which the agent finds the backdoor neuron by its own experiments and switches it off by
-    zeroing ten weights, at no cost in clean accuracy.
+    LLMs are weak readers (AUROC 0.61--0.65) but useful writers: the agent removes backdoors outright with
+    edits of a few weights and succeeds on networks where the best baseline fails, though it does not
+    beat the best baseline on mean attack success.
+  \item \textbf{Mechanistic evidence} (Sections~\ref{sec:case} and~\ref{sec:anatomy}): a step-by-step
+    episode, and an analysis of all 240 removal edits showing that hitting the backdoor channel is
+    necessary for removal and that concentrated backdoors are the ones removed.
+  \item \textbf{Ablations of reading and probing} (Section~\ref{sec:ablation}): removal power comes mostly
+    from running the network, reading the weights adds to it, and the two routes succeed on different
+    kinds of network.
+  \item \textbf{An honest test of the best result} (Sections~\ref{sec:repeats}--\ref{sec:confirm}): three
+    runs per condition expose large run-to-run variation; picking among runs helps, and a pre-registered
+    test on fresh networks confirms that, but not that the agent beats the best classical defence.
 \end{enumerate}
 
 % ============================================================================
@@ -294,7 +314,9 @@ sees.
 The agent is told that the network is backdoored and which kinds of trigger are possible, but not the
 target, pattern or corner. The rules forbid gradients and optimisers, a home-made forward pass that
 would bypass the meter, and file access. Every transcript is checked by an automatic audit for code
-that breaks these rules; all 20 transcripts passed. The agent is free to look at weights, craft its
+that breaks these rules; all 20 transcripts of the main run passed, and over all 240 removal episodes of
+the study the audit found two rule breaks, both reported (Sections~\ref{sec:repeats}
+and~\ref{sec:confirm}). The agent is free to look at weights, craft its
 own test images (for example, clean images with candidate patches), and test edits before submitting.
 
 \begin{figure}[!htb]
@@ -313,20 +335,22 @@ Text-mode detection and the removal agent use \textbf{Nemotron~3 Ultra}, a reaso
 image input. The image and text+image modes use \textbf{Nemotron~3.5 Super VL}, which reads
 images.\footnote{API model ids: \texttt{nvidia/nemotron-3-ultra-550b-a55b} and
 \texttt{nvidia/nemotron-3.5-super-vl-120b-a12b}.} Both were called through NVIDIA's free API catalog with default sampling, at most
-32{,}768 output tokens per call, and one run per model and mode. Table~\ref{tab:runs} summarises the
-runs. The whole LLM study took about 440 requests and finished in under three hours of wall time.
+32{,}768 output tokens per call. Detection was run once per model and mode; removal was run three times
+per condition. Table~\ref{tab:runs} summarises the runs. In total the study made 120 detection calls and
+240 removal episodes with 3{,}968 agent calls, in about 12 hours of wall time spread over four sessions.
 
 \begin{table}[!htb]
   \centering
-  \caption{\textbf{LLM runs.} Medians per model; ``turns'' is the number of LLM calls per model.
-  Tokens are summed over all turns of a removal episode. ``No answer'': detection calls that ran out
-  of output tokens while reasoning, or removal episodes with nothing submitted.}
+  \caption{\textbf{LLM runs.} $n$ counts detection calls or removal episodes (20 networks $\times$ 3 runs).
+  Other columns are medians; ``turns'' is the number of LLM calls per episode, and tokens are summed over
+  all turns. ``No ans.'': detection calls that ran out of output tokens while reasoning, or removal
+  episodes with nothing submitted.}
   \label{tab:runs}
   \small
   \setlength{\tabcolsep}{4pt}
   \begin{tabular}{llcccccc}
     \toprule
-    Experiment & LLM & Models & Turns & In tok. & Out tok. & Min. & No ans. \\
+    Experiment & LLM & $n$ & Turns & In tok. & Out tok. & Min. & No ans. \\
     \midrule
     \tabin{llm_runs_rows.tex}
     \bottomrule
@@ -430,8 +454,24 @@ other two modes give mean probabilities of 0.54--0.69 with similarly small gaps 
 backdoored models. Its stated probabilities therefore carry
 little ranking information. When it names a target class, it does better than chance (50\% in text
 mode against 10\% chance) but no better than the weight heuristic: the text-mode LLM is right on
-exactly 10 models, and the heuristic is right on all ten of them. The LLM appears to find the same
-signal, an outlying classifier weight, without adding to it. Trigger pattern guesses are near chance
+exactly 10 models, and the heuristic is right on all ten of them (Figure~\ref{fig:detect-heuristic}b).
+The LLM appears to find the same signal, an outlying classifier weight, without adding to it, and only
+when that signal is strong: where it names the target, the target's largest classifier weight stands
+out by 7.0 standard deviations on average, against 2.8 where it names another class
+(Figure~\ref{fig:detect-heuristic}c). Its probabilities follow the heuristic's score only loosely
+(Spearman 0.44) and stay high for most clean networks (panel a).
+
+\begin{figure}[!htb]
+  \centering
+  \includegraphics[width=\linewidth]{detect_heuristic.pdf}
+  \caption{\textbf{The LLM reader and the weight heuristic} (text mode, evaluation zoo). (a) The heuristic's
+  score against the LLM's stated backdoor probability, for all 40 networks. (b) On the 20 backdoored
+  networks, whether each names the true target: every target the LLM gets right, the heuristic also gets
+  right. (c) The target's largest classifier weight, where the LLM names the target and where it does
+  not; black markers are means with 95\% bootstrap CIs.}
+  \label{fig:detect-heuristic}
+\end{figure}
+ Trigger pattern guesses are near chance
 (40--45\% against 33\%), and corner guesses are at or below chance (15--30\% against 25\%). The corner
 result is expected and the LLM often says so itself (Figure~\ref{fig:read}): convolutions share
 weights across positions and global average pooling discards position, so the corner leaves little
@@ -499,7 +539,7 @@ episode ended with weights submitted, and the agent stopped on its own each time
   \end{tabular}
 \end{table}
 
-The average hides an all-or-nothing pattern (Figure~\ref{fig:remove-llm}a). On six models the agent
+The average hides a polarised pattern (Figure~\ref{fig:remove-llm}a). On six models the agent
 removes the backdoor almost completely (ASR 0--12\%); on eight it leaves more than 80\% in place;
 the rest are partial. Its edits are tiny: a median of 6 of the 24{,}234 weights, never more than 40
 (panel c). Per model, the agent beats NC unlearn on 11 of 20 networks in this run (panel b; 7 of 20
@@ -571,7 +611,8 @@ from the weights, confirm it with a controlled experiment, make a minimal causal
 It also shows the agent's main limitation. The budget is spent largely on confirming the hypothesis
 and checking side effects (panel c); every one of the 20 episodes used all 50 forward passes. When
 the backdoor is not carried by a single outstanding channel, the same workflow finds nothing to
-switch off, or switches off the wrong channel.
+switch off, or switches off the wrong channel; Section~\ref{sec:anatomy} shows that this holds across
+all episodes.
 
 \begin{figure}[!htb]
   \centering
@@ -589,7 +630,16 @@ switch off, or switches off the wrong channel.
 The agent can learn about a network in two ways: by reading the weights, or by running the network on
 inputs it designs and watching predictions and activations (probing). Either route can end in the same
 edit, so the main experiment cannot tell which one does the work. We therefore reran removal on the same
-20 models with the same LLM and prompt, removing one route at a time.
+20 models with the same LLM and prompt, removing one route at a time (Figure~\ref{fig:conditions}).
+
+\begin{figure}[!htb]
+  \centering
+  \includegraphics[width=\linewidth]{conditions.pdf}
+  \caption{\textbf{The removal conditions.} What the agent can see and do in each condition of the
+  ablation study. Random edit uses no LLM; it moves the full agent's own edit to random positions.}
+  \label{fig:conditions}
+\end{figure}
+
 \emph{Weights only}: the agent reads and edits every weight but cannot run the network and has no
 images. \emph{Probing only}: the agent runs the network (50 forward passes, activations included) and
 edits weights by position, for example ``multiply column 62 of \texttt{fc.weight} by 0'', but cannot
@@ -647,6 +697,66 @@ submitted \emph{exactly} the full agent's edit, zeroing the ten classifier weigh
 full agent. Five of the full agent's six successes are thus reached by one route alone, two by reading and
 three by probing: some backdoors announce themselves in a weight that stands out, others are found only
 by experiment. Neither route alone reaches the full agent's count.
+
+\subsection{Edit anatomy: does the agent hit the neuron that carries the backdoor?}
+\label{sec:anatomy}
+The case study shows one episode in which the agent finds the backdoor channel and switches it off. To
+test whether this is how removal works in general, we examined every edit in all 240 removal episodes:
+the evaluation zoo in all three conditions, three runs each, and the fresh zoo of
+Section~\ref{sec:confirm} with the full agent, three runs. For this analysis only, and never shown to any
+defender, we located each network's \emph{backdoor channel} with the real trigger: the conv3 channel
+whose rise in activation, when the trigger is stamped on the 1{,}000 defender images, adds the most to
+the target logit (rise times its classifier weight into the target). The same calculation gives the
+\emph{share} of the trigger's total push towards the target that this one channel carries, which
+measures how concentrated the backdoor is: from 13\% to 90\% across networks (median 31\%). An edit
+\emph{hits} the channel if it changes the channel's classifier column, its conv3 filter or its bias.
+
+\begin{figure}[!htb]
+  \centering
+  \includegraphics[width=\linewidth]{edit_anatomy.pdf}
+  \caption{\textbf{Anatomy of all 240 removal episodes.} (a) Share of episodes whose edit changes each
+  layer. (b) Held-out ASR after the edit, for edits that touch the network's backdoor channel (``hit'',
+  coloured) and edits that do not (``miss'', grey); numbers count episodes that bring the network below
+  20\% ASR. No edit that misses the channel removes the backdoor. (c) Share of the trigger's push towards
+  the target carried by the backdoor channel, against the full agent's mean ASR over three runs, for the
+  evaluation zoo (circles) and the fresh zoo (triangles).}
+  \label{fig:anatomy}
+\end{figure}
+
+Figure~\ref{fig:anatomy} gives three results. \emph{Where the edits land} (panel a): in every condition
+almost every episode edits the classifier layer, and only a minority touch conv3 or earlier layers, so
+the agent works where the backdoor meets the output, as in the case study. \emph{Hitting the backdoor
+channel is necessary} (panel b): none of the 69 episodes whose edit misses the channel removes the
+backdoor, and those episodes leave a mean ASR of 95--100\%. Of the 171 that hit it, 48 remove the
+backdoor (6 of 32 for weights only, 15 of 41 for probing only, 27 of 98 for the full agent; Fisher's
+exact test against the misses, $p = 0.026$, $0.001$ and $0.003$). Hitting the channel is not sufficient,
+though: most hits still leave much of the backdoor in place. \emph{Concentrated backdoors are the ones
+removed} (panel c): the larger the share carried by the one channel, the lower the full agent's ASR
+(Spearman $-0.42$, $p = 0.007$, 40 networks from both zoos). When the backdoor is spread over several
+channels, switching off the main one is not enough, and the agent rarely goes on to find the others.
+
+\begin{figure}[!htb]
+  \centering
+  \includegraphics[width=\linewidth]{predictors.pdf}
+  \caption{\textbf{Reading needs a weight that stands out; probing does not.} For the 20 backdoored
+  evaluation networks, how far the target class's largest classifier weight stands out (in standard
+  deviations of all classifier weights) against the agent's mean ASR over three runs, in each condition.
+  Marker shape is the trigger pattern.}
+  \label{fig:predictors}
+\end{figure}
+
+Figure~\ref{fig:predictors} explains the ablation result of Section~\ref{sec:ablation} at the level of
+single networks. Without forward passes, the agent succeeds only where the backdoor leaves an obvious
+mark in the weights: its ASR falls steeply as the target's largest classifier weight stands out more
+(Spearman $-0.76$, $p < 0.001$), and on all nine networks where that weight stands out by less than 3.5
+standard deviations it leaves the backdoor fully intact (mean ASR at least 99.8\%).
+With forward passes but no weight values, success does not depend on this mark at all (Spearman $0.14$,
+$p = 0.55$): probing finds backdoors whether or not they are visible in the weights, including
+checkerboard and colour-noise triggers that leave little trace. The full agent sits in between (Spearman
+$-0.16$). The two routes therefore succeed on different kinds of network, which is why combining them
+beats either one. One confound should be noted: white-square triggers produce the most outlying weights
+(all networks above 5 standard deviations have white-square triggers), so for the weights-only agent
+``an outlying weight'' and ``a white square'' cannot be separated with these 20 networks.
 
 \subsection{Repeat runs: how much does one run tell us?}
 \label{sec:repeats}
@@ -771,8 +881,8 @@ test at $\alpha = 0.05$; the secondary hypothesis H2 was that the picked run bea
 \textbf{H1 is not supported.} The picked agent run leaves 51.5\% mean ASR (CI $[36.4, 66.0]$) against
 47.0\% for NC unlearn (CI $[35.9, 57.6]$); the paired difference is $+4.5$ points (CI $[-17.7, 26.9]$), and
 the one-sided test gives $p = 0.69$. Per network the agent is lower on 11 of 20, but where it wins it wins
-by 39 points on average and where it loses it loses by 57: a network it fails on is usually left almost
-fully backdoored, while NC unlearn tends to reduce every backdoor partly. \textbf{H2 is supported}: picking
+by 39 points on average and where it loses it loses by 57: a network it fails on is often left almost
+fully backdoored, while NC unlearn usually reduces the backdoor partly (see below). \textbf{H2 is supported}: picking
 lowers the agent's mean ASR from 65.3\% for an average run to 51.5\% ($p = 0.0003$), and raises the number of
 networks below 20\% from 3.3 per run on average to 5, more than any classical defence on this zoo (NC unlearn
 and fine-pruning remove 3 each). The oracle best run reaches 46.3\% and 7 networks, so the selection rule
@@ -794,8 +904,71 @@ Unlike the first break, this episode succeeded (ASR 12\%) and was the run picked
 pre-registered, it is kept in the main result; removing it (picking among the other two runs) raises the
 picked agent's mean ASR to 55.2\% ($p = 0.79$), which does not change the conclusion.
 
+\paragraph{Why the picked agent loses on average.} Figure~\ref{fig:outcomes} shows the reason directly,
+on both zoos. NC unlearn mostly weakens backdoors partly: 60--70\% of networks end between 20\% and 80\%
+ASR, and only 15\% keep the backdoor intact (80\% or more). A single agent run leaves the backdoor intact
+on a third (evaluation zoo) to half (fresh zoo) of the networks, and even the picked run leaves 10--30\%
+intact. The agent removes more backdoors outright than NC unlearn, but its misses are more often total,
+and mean attack success weighs those heavily.
+
+\begin{figure}[!htb]
+  \centering
+  \includegraphics[width=\linewidth]{outcomes.pdf}
+  \caption{\textbf{How each defence leaves the backdoors.} Share of backdoored networks whose backdoor is
+  removed (held-out ASR below 20\%), partly removed (20--80\%) or left intact (80\% or more), on the
+  evaluation zoo (a) and the fresh pre-registered zoo (b). ``Agent, single run'' pools the three runs (60
+  episodes per zoo).}
+  \label{fig:outcomes}
+\end{figure}
+
 % ============================================================================
 \section{Discussion}
+
+\paragraph{What the evidence supports.} Table~\ref{tab:claims} lists every claim this report makes about
+the LLMs, the evidence for it, and how firmly it is established. Only one claim was tested under
+pre-registration on fresh networks, and it did not hold; the others rest on the evaluation zoo, where
+several analyses were chosen after seeing the data.
+
+\begin{table}[!htb]
+  \centering
+  \caption{\textbf{Claims and evidence.} ``Confirmed'': tested on fresh networks with a pre-registered
+  protocol. ``Supported'': clear on the evaluation zoo (with three runs where relevant), not
+  pre-registered. ``Exploratory'': chosen or tuned after seeing the data. ``Not supported'': failed its
+  test.}
+  \label{tab:claims}
+  \small
+  \renewcommand{\arraystretch}{1.15}
+  \begin{tabular}{p{6.2cm}p{5.6cm}l}
+    \toprule
+    Claim & Evidence & Status \\
+    \midrule
+    LLMs detect backdoors from weights alone only slightly better than chance & AUROC 0.61--0.65 vs
+      0.87--0.94 (Fig.~\ref{fig:detect}) & Supported \\
+    The LLM reader finds the same signal as a one-line weight statistic & 10 of 10 targets also named by
+      the heuristic (Fig.~\ref{fig:detect-heuristic}) & Supported \\
+    An LLM agent can remove backdoors by editing a few weights, with no gradients & 3--6 of 20 per run,
+      median 6 weights (Fig.~\ref{fig:remove-llm}) & Supported \\
+    The agent's edits work because of where they land & random edit 89.5\% vs 51.9\% ASR
+      (Fig.~\ref{fig:ablation}) & Supported \\
+    Hitting the backdoor channel is necessary for removal & 0 of 69 misses succeed
+      (Fig.~\ref{fig:anatomy}) & Supported \\
+    Removal power comes mostly from probing; reading adds to it & full vs probing only $-10$ pt over 3
+      runs, $p=0.009$ (Table~\ref{tab:ablation}) & Supported \\
+    Reading works only when a weight stands out; probing does not need it & Spearman $-0.76$ vs $0.14$
+      (Fig.~\ref{fig:predictors}) & Supported \\
+    Single agent runs are unreliable per network & 11 removed in some run, 1 in all three
+      (Fig.~\ref{fig:repeats}) & Supported \\
+    A defender can pick a better run without the trigger & 65.3\% $\to$ 51.5\%, $p=0.0003$, fresh zoo
+      (Fig.~\ref{fig:confirm}) & Confirmed \\
+    The picked agent beats NC unlearn on mean ASR & 33\% vs 42.8\% (eval, threshold chosen after) &
+      Exploratory \\
+     & 51.5\% vs 47.0\%, $p=0.69$ (fresh zoo) & Not supported \\
+    The agent leaves backdoors intact more often than NC unlearn & 33--48\% vs 15\% of networks
+      (Fig.~\ref{fig:outcomes}) & Supported \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
 \paragraph{Why reading fails and writing works.}
 The two tasks differ in what the LLM can do with its reasoning. In detection, it must compare
 thousands of numbers across a 64{,}000-token prompt without computing anything: no means, no standard
@@ -814,7 +987,9 @@ probing-only agent by 10 points ($p=0.009$). Without any forward pass the agent 
 backdoors, with the same or nearly the same edit as the full agent, and on one of them (the case study)
 the probing agent, which could not see that one channel stands out, missed that edit. The full agent does
 best, consistent with each route covering cases the other misses: the weights suggest where to look, and
-experiments decide.
+experiments decide. The per-network analysis (Figure~\ref{fig:predictors}) makes this concrete: reading
+succeeds only on networks whose backdoor leaves a large outlying classifier weight, while probing succeeds
+regardless, including on triggers that leave no such mark.
 
 \paragraph{What the agent adds.}
 The agent's repairs are targeted: it edits a median of six weights, while the gradient-based baselines
@@ -824,8 +999,9 @@ blames and the evidence. The agent also succeeds on networks where the best base
 versa. Its main weakness is consistency: the same model is repaired in one run and untouched in the next,
 so a practical tool would run the agent several times and keep a repair it can verify
 (Section~\ref{sec:bestofk}). The pre-registered test (Section~\ref{sec:confirm}) shows both sides of
-this: keeping the best of three runs helps the agent a great deal, but its failures remain all-or-nothing,
-so on mean attack success it does not overtake a classical defence that weakens every backdoor partly. A practical defence could also combine the agent with classical repairs,
+this: keeping the best of three runs helps the agent a great deal, but its misses are more often total
+than NC unlearn's (Figure~\ref{fig:outcomes}), so on mean attack success it does not overtake a classical
+defence that usually weakens the backdoor partly. A practical defence could also combine the agent with classical repairs,
 with the agent diagnosing the trigger and choosing or calling one.
 
 \paragraph{Limitations.}
@@ -856,15 +1032,18 @@ unlearn) did not replicate, and other exploratory results should be read with th
     passes); intermediate budgets (5, 10, 20) would show how many experiments reading saves. Compare
     stronger frontier models with the open models used here, and pre-register each comparison on a fresh
     zoo, as in Section~\ref{sec:confirm}.
-  \item \textbf{Make failures partial.} The agent loses to NC unlearn because its failures leave the
-    backdoor fully in place. Running a classical repair on the networks where the agent's own trigger check
+  \item \textbf{Make failures partial.} The agent loses to NC unlearn because its misses more often leave
+    the backdoor fully in place (Figure~\ref{fig:outcomes}). Running a classical repair on the networks where the agent's own trigger check
     still finds a working trigger would combine the agent's complete removals with the baseline's partial
     ones; this needs its own pre-registered test.
   \item \textbf{Harder attacks and larger networks.} Blended and warping triggers, clean-label
     poisoning, multiple targets, attacks designed to hide from weight statistics, and architectures
     with batch normalisation and residual connections, where single weights are harder to read.
-  \item \textbf{Faithfulness of explanations.} Check whether the neuron the agent blames actually
-    carries the backdoor by ablating exactly what it names, across all models.
+  \item \textbf{Find the rest of a spread-out backdoor.} Hitting the main backdoor channel is necessary
+    but often not enough (Section~\ref{sec:anatomy}). After a first edit, the agent could re-run its trigger
+    search and continue on the next channel; whether it can do this within the pass budget is untested.
+  \item \textbf{Faithfulness of explanations.} Check whether the neuron the agent names in its summary is
+    the one its edit hits, across all episodes.
   \item \textbf{Scale the zoo} for tighter intervals and formal tests between methods.
 \end{enumerate}
 

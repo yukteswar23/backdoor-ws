@@ -337,7 +337,101 @@ transcript is audited. The last weights passed to submit() are scored outside th
 trigger, which the agent never sees.""", tight=False)
 
 
-FIGS = {"overview": fig_overview, "poisoning": fig_poisoning, "read": fig_read, "agent": fig_agent}
+# ============================================================================ 5. roadmap of the experiments
+STATUS = {"yes": ("#3C8A4E", "supported"), "partly": ("#B08900", "partly / exploratory"),
+          "no": (PALETTE["red_strong"], "not supported"), "fact": (PALETTE["grey_dark"], "measured")}
+ROADMAP = [
+    ("6.1", "Zoo", "Can we plant strong backdoors that\naccuracy does not reveal?",
+     "Yes: mean ASR 96.7%, clean accuracy\nabout 70% in both groups", "yes"),
+    ("6.2", "Detection", "Can an LLM tell from the weights\nalone whether a network is backdoored?",
+     "Barely: AUROC 0.61-0.65, against\n0.87-0.94 for the baselines", "no"),
+    ("6.3-6.4", "Removal", "Can an LLM agent remove the backdoor\nby editing weights, without gradients?",
+     "Partly: 6/20 removed with ~6 weights;\nmean ASR 51.9% vs 42.8% (NC unlearn)", "partly"),
+    ("6.5", "Ablations", "Does the agent succeed by reading\nthe weights or by probing the net?",
+     "Mostly probing; reading adds 10 pt\n(3 runs, p = 0.009)", "yes"),
+    ("6.6", "Edit anatomy", "Do the edits hit the neuron that\ncarries the backdoor?",
+     "Necessary: 0 of 69 edits that miss\nthe backdoor channel remove it", "yes"),
+    ("6.7", "Repeat runs", "Does one run tell us how well\nthe agent does on a model?",
+     "No: 11 backdoors removed in some run,\nonly 1 in all three", "fact"),
+    ("6.8", "Best of 3", "Can a defender pick the good run\nwithout knowing the trigger?",
+     "Partly: picking helps; 'beats NC\nunlearn' only after the fact", "partly"),
+    ("6.9", "Pre-registered\nconfirmation", "On 20 fresh networks, does the picked\nagent beat NC unlearn?",
+     "No (p = 0.69); picking itself\nconfirmed (p = 0.0003)", "no"),
+]
+
+
+def fig_roadmap():
+    rows = len(ROADMAP)
+    rh, top = 0.5, 0.42
+    fig, ax = _canvas(7.0, top + rows * rh + 0.38)
+    H = top + rows * rh + 0.38
+    xs = [0.05, 0.55, 1.6, 4.05]  # section, experiment, question, answer
+    for x, t in zip(xs, ["§", "Experiment", "Question", "Answer"]):
+        ax.text(x + 0.02, H - 0.2, t, fontsize=7.5, fontweight="bold", va="center")
+    for i, (sec, name, q, a, st) in enumerate(ROADMAP):
+        y = H - top - (i + 1) * rh
+        color = STATUS[st][0]
+        ax.add_patch(Rectangle((0.03, y + 0.03), 6.94, rh - 0.06, fc="#F7F7F7" if i % 2 else "white", ec="none"))
+        ax.text(xs[0] + 0.02, y + rh / 2, sec, fontsize=6.5, va="center", color=PALETTE["grey_dark"])
+        ax.text(xs[1] + 0.02, y + rh / 2, name, fontsize=7, va="center", fontweight="bold", linespacing=1.1)
+        ax.text(xs[2] + 0.02, y + rh / 2, q, fontsize=6.5, va="center", linespacing=1.25)
+        arrow(ax, (xs[3] - 0.22, y + rh / 2), (xs[3] - 0.06, y + rh / 2))
+        ax.add_patch(FancyBboxPatch((xs[3], y + 0.06), 2.9, rh - 0.12, boxstyle="round,pad=0,rounding_size=0.04",
+                                    fc="white", ec=color, lw=1.1))
+        ax.add_patch(Rectangle((xs[3], y + 0.06), 0.07, rh - 0.12, fc=color, ec="none"))
+        ax.text(xs[3] + 0.14, y + rh / 2, a, fontsize=6.5, va="center", linespacing=1.25)
+    for k, (color, label) in enumerate(STATUS.values()):
+        x = 0.3 + k * 1.75
+        ax.add_patch(Rectangle((x, 0.1), 0.12, 0.12, fc=color, ec="none"))
+        ax.text(x + 0.18, 0.16, label, fontsize=6.5, va="center")
+    save(fig, FIG_DIR / "roadmap", """
+The eight experiments of this study in the order they were run, the question each answers, and the
+answer, with the section where it is reported. Colour marks the status of the answer: supported,
+partly supported or exploratory, not supported, or a measurement without a hypothesis.""", tight=False)
+
+
+# ============================================================================ 6. what each removal condition can do
+def fig_conditions():
+    conds = ["Full agent", "Weights only", "Probing only", "Random edit"]
+    caps = [("See every weight value", [1, 1, 0, None]),
+            ("Run the network (50 forward passes)", [1, 0, 1, None]),
+            ("Activations of every layer", [1, 0, 1, None]),
+            ("1,000 clean defender images", [1, 0, 1, None]),
+            ("Edit weights", ["any value", "any value", "by position\n(scale / zero)", "agent's edit,\nmoved at random"]),
+            ("Uses an LLM", [1, 1, 1, 0])]
+    fig, ax = _canvas(7.0, 2.75)
+    x0, cw, rh, ytop = 2.35, 1.15, 0.33, 2.3
+    for j, c in enumerate(conds):
+        ax.text(x0 + j * cw + cw / 2, ytop + 0.2, c, ha="center", va="center", fontsize=7.2, fontweight="bold",
+                color=EDGE["base"] if c == "Random edit" else EDGE["llm"])
+    for i, (cap, vals) in enumerate(caps):
+        y = ytop - (i + 1) * rh
+        ax.text(0.08, y + rh / 2, cap, va="center", fontsize=6.8)
+        for j, v in enumerate(vals):
+            x = x0 + j * cw
+            if v is None:
+                fc, txt, tc = "#F3F3F3", "n/a", PALETTE["grey_dark"]
+            elif isinstance(v, str):
+                fc, txt, tc = "#EAF1F8", v, "black"
+            else:
+                fc, txt, tc = ("#E3F1E6", "yes", GOOD) if v else ("#FBEAEA", "no", BAD)
+            ax.add_patch(FancyBboxPatch((x + 0.04, y + 0.03), cw - 0.08, rh - 0.06,
+                                        boxstyle="round,pad=0,rounding_size=0.03", fc=fc, ec="white"))
+            ax.text(x + cw / 2, y + rh / 2, txt, ha="center", va="center", fontsize=6.2 if "\n" in txt else 6.8,
+                    color=tc, fontweight="bold" if txt in ("yes", "no") else "normal", linespacing=1.1)
+    ax.text(0.08, 0.12, "All LLM conditions: same LLM (Nemotron 3 Ultra), same task, no gradients; the prompt "
+            "describes only the tools available. Scored on 9,000 held-out images with the real trigger.",
+            fontsize=6.0, color=PALETTE["grey_dark"])
+    save(fig, FIG_DIR / "conditions", """
+What the removal agent can do in each condition of the ablation study. The full agent is the main
+experiment. Weights only removes every way of running the network; probing only hides the weight values
+behind a handle that can still be run and edited by position. Random edit uses no LLM: it applies the full
+agent's own edit at random positions of the same tensors, to test whether the location of the edit matters.""",
+         tight=False)
+
+
+FIGS = {"overview": fig_overview, "poisoning": fig_poisoning, "read": fig_read, "agent": fig_agent,
+        "roadmap": fig_roadmap, "conditions": fig_conditions}
 
 if __name__ == "__main__":
     ap = argparse.ArgumentParser()
