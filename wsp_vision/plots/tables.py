@@ -131,8 +131,13 @@ def table_ablation():
         asr = _ci(*bootstrap_ci([r[m]["asr"] for r in rows]), scale=100, fmt="{:.1f}")
         n20 = (f"{sum(r[m]['asr'] < 0.2 and r[m]['clean_acc'] >= 0.2 for r in rows)}/{len(rows)}"
                if m != "original" else "--")
+        runs_cols = [m] + sorted(k for k in rows[0] if k.startswith(m + "_run") and all(k in r for r in rows))
+        if m.startswith("agent") and len(runs_cols) > 1:  # repeat runs: each model's ASR averaged over its runs
+            asr3 = _ci(*bootstrap_ci([np.mean([r[c]["asr"] for c in runs_cols]) for r in rows]), scale=100, fmt="{:.1f}")
+        else:
+            asr3 = "--"
         label = METHOD_LABELS[m] if m != "agent" else "Agent, full"
-        lines.append(f"{label} & {reads} & {runs} & {acc} & {asr} & {n20} \\\\")
+        lines.append(f"{label} & {reads} & {runs} & {acc} & {asr} & {n20} & {asr3} \\\\")
     return lines
 
 

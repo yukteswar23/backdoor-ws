@@ -46,17 +46,24 @@ removed the most backdoors outright, typically by editing about six weights, alt
 left the backdoor intact.
 
 **Ablations: does the agent read the weights or probe the network?** Same 20 models, same LLM.
+Each agent condition was run three times; ASR < 20% is from the first run.
 
-| Removal condition | Reads weights | Runs network | Mean ASR | ASR < 20% | Clean accuracy |
-|---|---|---|---|---|---|
-| Random edit (agent's edit at random positions, no LLM) | – | – | 89.5% | 0/20 | 65.0% |
-| Agent, weights only | yes | no | 77.7% | 2/20 | 69.5% |
-| Agent, probing only (weights hidden, edits by position) | no | 50 passes | 61.7% | 5/20 | 68.8% |
-| Agent, full | yes | 50 passes | 51.9% | 6/20 | 69.5% |
+| Removal condition | Reads weights | Runs network | Mean ASR, run 1 | Mean ASR, 3 runs | ASR < 20% | Clean accuracy |
+|---|---|---|---|---|---|---|
+| Random edit (agent's edit at random positions, no LLM) | – | – | 89.5% | – | 0/20 | 65.0% |
+| Agent, weights only | yes | no | 77.7% | 77.1% | 2/20 | 69.5% |
+| Agent, probing only (weights hidden, edits by position) | no | 50 passes | 61.7% | 60.4% | 5/20 | 68.8% |
+| Agent, full | yes | 50 passes | 51.9% | 50.4% | 6/20 | 69.5% |
 
-Most of the agent's success comes from probing, but reading contributes: without running the network
-once, the weights-only agent reproduced the full agent's exact edit on the case-study model, an edit
-the probing-only agent missed. The agent's edits only work where it puts them (random edit: 89.5%).
+Most of the agent's success comes from probing, but reading adds to it. Averaged over three runs, the
+full agent beats the probing-only agent by 10 points (paired p = 0.009). Without running the network
+once, the weights-only agent reproduced the full agent's exact edit on the case-study model, an edit the
+probing-only agent missed. The agent's edits only work where it puts them (random edit: 89.5%).
+
+**Runs vary a lot.** Per-run averages are stable (full agent 44.6–54.9%), but single models are not:
+across three runs the full agent removes 11 different backdoors, and only one of them every time.
+In 180 removal episodes the audit found one rule break (a hand-written forward pass after the budget
+ran out), and it did not change the result.
 
 ## Reproduce
 
@@ -67,6 +74,7 @@ bash run_zoo.sh                     # trains the zoo (already included in zoo/)
 bash run_baselines.sh               # non-LLM baselines + figures
 NVIDIA_API_KEY=... bash run_nvidia.sh   # LLM detection + removal, audit, scoring, figures
 NVIDIA_API_KEY=... bash run_ablation.sh # removal ablations (weights only, probing only, random edit)
+NVIDIA_API_KEY=... bash run_repeats.sh  # runs 2 and 3 of every removal condition
 ```
 
 Set `WSP_LLM` to choose the model; ids with a `/` go to the NVIDIA API, anything else to Claude. All LLM stages skip models already finished, so a stopped run resumes.
