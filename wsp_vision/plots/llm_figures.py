@@ -360,8 +360,77 @@ dashed line is NC unlearn. (c) Models below 20% ASR: per run on average (plain),
 oracle (dotted).""")
 
 
+# ============================================================================ pre-registered confirmation
+def _pick(m: dict, cond: str, drop: float) -> float:
+    """Held-out ASR of the run the defender picks (select_runs.py rule) at a given accuracy threshold."""
+    ok = [r for r in m[cond]["runs"] if r["def_acc"] >= m["original"]["def_acc"] - drop]
+    return min(ok, key=lambda r: (r["est_asr"], -r["def_acc"]))["asr"] if ok else m[cond]["runs"][0]["asr"]
+
+
+def fig_confirm():
+    paths = [RESULTS_DIR / f for f in ["best_of_k.json", "best_of_k_confirm.json", "remove_baselines_confirm.json"]]
+    if not all(p.exists() for p in paths):
+        print("confirm: confirmation results missing, skipped"); return
+    zoos = {"eval": (read_json(paths[0])["models"], {r["model_id"]: r for r in read_json(RESULTS_DIR / "remove_baselines.json")}),
+            "confirm": (read_json(paths[1])["models"], {r["model_id"]: r for r in read_json(paths[2])})}
+    series = {
+        "NC unlearn": lambda m, b: b["nc_unlearn"]["asr"],
+        "Agent, average run": lambda m, b: np.mean([r["asr"] for r in m["full"]["runs"]]),
+        "Agent, picked (8 pt)": lambda m, b: _pick(m, "full", 0.08),
+        "Agent, best run (oracle)": lambda m, b: min(r["asr"] for r in m["full"]["runs"]),
+    }
+    colors = [METHOD_COLORS["nc_unlearn"], PALETTE["blue_secondary"], METHOD_COLORS["agent"], "#8FB4DC"]
+    fig, (a, b, c) = plt.subplots(1, 3, figsize=(7.2, 2.7), gridspec_kw={"width_ratios": [1.35, 1, 1]})
+    for i, (name, f) in enumerate(series.items()):
+        for j, (zoo, (sel, base)) in enumerate(zoos.items()):
+            vals = [100 * f(sel[mid], base[mid]) for mid in sorted(sel)]
+            v, lo, hi = bootstrap_ci(vals)
+            x = i + (j - 0.5) * 0.32
+            a.errorbar(x, v, yerr=[[v - lo], [hi - v]], fmt="o" if zoo == "confirm" else "s", ms=4.5, capsize=2.5,
+                       lw=0.9, color=colors[i], mfc=colors[i] if zoo == "confirm" else "white", mec=colors[i], mew=1)
+    a.set_xticks(range(len(series)))
+    a.set_xticklabels(["NC\nunlearn", "Agent,\navg run", "Agent,\npicked", "Agent,\noracle"], fontsize=6.5)
+    a.set_ylim(0, 100); a.set_ylabel("Mean held-out ASR (%)")
+    a.scatter([], [], marker="s", facecolor="white", edgecolor="black", s=16, label="eval zoo (threshold chosen after)")
+    a.scatter([], [], marker="o", color="black", s=16, label="fresh zoo (pre-registered)")
+    a.legend(fontsize=6, loc="upper right", handletextpad=0.2, borderaxespad=0.1)
+    a.set_title("a  Eval zoo vs fresh zoo", loc="left", fontweight="bold")
+
+    sel, base = zoos["confirm"]
+    for mid in sorted(sel):
+        b.scatter(100 * base[mid]["nc_unlearn"]["asr"], 100 * _pick(sel[mid], "full", 0.08), s=16,
+                  color=METHOD_COLORS["agent"], alpha=0.85, edgecolor="none")
+    b.plot([0, 100], [0, 100], ls=":", color=PALETTE["grey_dark"], lw=0.8)
+    b.set_xlim(-3, 103); b.set_ylim(-3, 103); b.set_aspect("equal")
+    b.set_xlabel("NC unlearn ASR (%)"); b.set_ylabel("Agent, picked ASR (%)")
+    n_lower = sum(_pick(sel[m], "full", 0.08) < base[m]["nc_unlearn"]["asr"] for m in sel)
+    b.set_title("b  Fresh zoo, per model", loc="left", fontweight="bold")
+
+    for i, (name, f) in enumerate(series.items()):
+        for j, (zoo, (sel_z, base_z)) in enumerate(zoos.items()):
+            if name == "Agent, average run":
+                n = np.mean([sum(sel_z[m]["full"]["runs"][k]["asr"] < 0.2 for m in sel_z) for k in range(3)])
+            else:
+                n = sum(f(sel_z[m], base_z[m]) < 0.2 for m in sel_z)
+            c.bar(i + (j - 0.5) * 0.36, n, width=0.34, color=colors[i] if zoo == "confirm" else "white",
+                  edgecolor=colors[i], lw=1)
+    c.set_xticks(range(len(series)))
+    c.set_xticklabels(["NC\nunlearn", "Agent,\navg run", "Agent,\npicked", "Agent,\noracle"], fontsize=6.5)
+    c.set_ylim(0, 20); c.set_yticks(range(0, 21, 4)); c.set_ylabel("Models with ASR < 20%")
+    c.set_title("c  Backdoors removed", loc="left", fontweight="bold")
+    save(fig, FIG_DIR / "confirm", f"""
+Pre-registered confirmation on a fresh zoo of 20 backdoored models (full agent, three runs per model,
+Nemotron 3 Ultra). (a) Mean held-out ASR with 95% bootstrap CIs on the evaluation zoo (hollow squares;
+there the 8-point accuracy threshold was chosen after seeing the results) and on the fresh zoo (filled
+circles; threshold fixed in advance): NC unlearn, an average agent run, the run picked by the defender's
+trigger check, and the best run (oracle). (b) Fresh zoo, per model: ASR of the picked agent run against
+NC unlearn; points below the diagonal favour the agent ({n_lower} of {len(sel)} models), but the agent's
+losses are larger than its wins. (c) Models brought below 20% ASR (hollow: eval
+zoo; filled: fresh zoo); for the average run, the mean count over the three runs.""")
+
+
 FIGS = {"detect_llm": fig_detect_llm, "remove_llm": fig_remove_llm, "case_study": fig_case_study,
-        "ablation": fig_ablation, "repeats": fig_repeats, "best_of_k": fig_best_of_k}
+        "ablation": fig_ablation, "repeats": fig_repeats, "best_of_k": fig_best_of_k, "confirm": fig_confirm}
 
 if __name__ == "__main__":
     ap = argparse.ArgumentParser()

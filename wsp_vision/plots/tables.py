@@ -141,9 +141,35 @@ def table_ablation():
     return lines
 
 
+def table_confirm():
+    """Pre-registered confirmation zoo: every baseline, each agent run, and the picked run."""
+    sel_path, base_path = RESULTS_DIR / "best_of_k_confirm.json", RESULTS_DIR / "remove_baselines_confirm.json"
+    if not (sel_path.exists() and base_path.exists()):
+        return ["% confirmation results missing"]
+    sel = read_json(sel_path)["models"]
+    base = {r["model_id"]: r for r in read_json(base_path)}
+    mids = sorted(sel)
+
+    def row(label, cells):
+        acc = _ci(*bootstrap_ci([c["clean_acc"] for c in cells]), scale=100, fmt="{:.1f}")
+        asr = _ci(*bootstrap_ci([c["asr"] for c in cells]), scale=100, fmt="{:.1f}")
+        n20 = f"{sum(c['asr'] < 0.2 for c in cells)}/{len(cells)}"
+        return f"{label} & {acc} & {asr} & {n20} \\\\"
+
+    lines = [row(METHOD_LABELS[m], [base[i][m] for i in mids])
+             for m in ["original", "weight_prune_outlier", "finetune", "fine_pruning", "nc_unlearn"]]
+    lines.append("\\midrule")
+    for k in range(3):
+        lines.append(row(f"Agent, run {k + 1}", [sel[i]["full"]["runs"][k] for i in mids]))
+    lines.append(row("Agent, picked (8 pt, pre-registered)", [sel[i]["full"]["picked"] for i in mids]))
+    lines.append(row("Agent, best run (oracle)", [min(sel[i]["full"]["runs"], key=lambda r: r["asr"]) for i in mids]))
+    return lines
+
+
 if __name__ == "__main__":
     OUT.mkdir(parents=True, exist_ok=True)
     for name, fn in [("zoo", table_zoo), ("detect", table_detect), ("remove", table_remove),
-                     ("pattern", table_pattern), ("llm_runs", table_llm_runs), ("ablation", table_ablation)]:
+                     ("pattern", table_pattern), ("llm_runs", table_llm_runs), ("ablation", table_ablation),
+                     ("confirm", table_confirm)]:
         (OUT / f"{name}_rows.tex").write_text("\n".join(fn()) + "\n", encoding="utf-8")
         print("wrote", OUT / f"{name}_rows.tex")

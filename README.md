@@ -72,6 +72,26 @@ the full agent (50.4% → 48.4%): its best runs cost slightly more than the allo
 accuracy. Exploratory, with that threshold relaxed to 8 points or more: the picked full agent reaches
 about 33% (8/20 removed), below NC unlearn's 42.8%. `python -m wsp_vision.agent.select_runs` (no API).
 
+**Pre-registered confirmation on a fresh zoo: the "beats NC unlearn" result did not replicate.** We
+trained 20 new backdoored models and pushed [PREREGISTRATION.md](PREREGISTRATION.md) (8-point threshold
+fixed) before running the agent on them.
+
+| Fresh zoo (20 backdoored) | Mean ASR | ASR < 20% | Clean accuracy |
+|---|---|---|---|
+| No defence | 96.3% | – | 69.5% |
+| Fine-pruning | 68.5% | 3/20 | 66.7% |
+| NC unlearn | 47.0% | 3/20 | 67.1% |
+| Agent, average of 3 runs | 65.3% | 3.3/20 | 67.9% |
+| Agent, picked run (pre-registered rule) | 51.5% | 5/20 | 67.4% |
+| Agent, best run (oracle) | 46.3% | 7/20 | 67.1% |
+
+- **H1 not supported:** the picked agent does not beat NC unlearn (p = 0.69).
+- **H2 supported:** picking clearly beats an average run (p = 0.0003).
+
+The agent removes more backdoors outright than any baseline, but the ones it misses stay fully in
+place. The audit found one rule break in these 60 episodes (a hand-written forward pass); without it
+the conclusion is the same.
+
 ## Reproduce
 
 ```bash
@@ -82,6 +102,9 @@ bash run_baselines.sh               # non-LLM baselines + figures
 NVIDIA_API_KEY=... bash run_nvidia.sh   # LLM detection + removal, audit, scoring, figures
 NVIDIA_API_KEY=... bash run_ablation.sh # removal ablations (weights only, probing only, random edit)
 NVIDIA_API_KEY=... bash run_repeats.sh  # runs 2 and 3 of every removal condition
+python -m wsp_vision.train_zoo --split confirm --n 40   # fresh confirmation zoo
+python -m wsp_vision.baselines remove --split confirm   # baselines on it
+NVIDIA_API_KEY=... bash run_confirm.sh  # pre-registered confirmation (3 agent runs, selection, tests)
 ```
 
 Set `WSP_LLM` to choose the model; ids with a `/` go to the NVIDIA API, anything else to Claude. All LLM stages skip models already finished, so a stopped run resumes.
